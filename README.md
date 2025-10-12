@@ -132,3 +132,14 @@ Notes
    ask and I can re-add targeted docs for a specific component (DICOM wrapper, reorientation, etc.).
 
 License: (unchanged)
+
+## Acknowledgements
+
+This project started from the NeSVoR codebase and was adapted to produce a minimal, self-contained
+SVR CLI package focused on DICOM-driven slice-to-volume reconstruction and automatic stack
+reorientation. Many core algorithms and high-level design choices were informed by NeSVoR — thanks
+to its authors for providing a solid starting point.
+
+Useful links:
+- NeSVoR GitHub: https://github.com/daviddmc/NeSVoR
+- NeSVoR documentation: https://nesvor.readthedocs.io/
