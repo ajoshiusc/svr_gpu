@@ -1,39 +1,78 @@
-# SVR CLI Minimal - Complete Package
+# SVR GPU - Slice-to-Volume Reconstruction
 
-## Overview
+A GPU-accelerated slice-to-volume reconstruction (SVR) pipeline for fetal/neonatal MRI with automatic stack reorientation and DICOM support.
 
-A complete Super-Resolution Reconstruction (SVR) pipeline for fetal/neonatal MRI with automatic stack reorientation and DICOM support.
+## Features
 
-## Components
+- 🚀 **GPU-accelerated reconstruction** using PyTorch and CUDA
+- 🔄 **Automatic stack reorientation** - detects and corrects slice orientations
+- 🏥 **DICOM support** - direct DICOM input/output for clinical workflows
+- 🧠 **Brain segmentation** - MONAI-based fetal brain masking
+- 📊 **Quality metrics** - SVoRT similarity tracking and motion estimation
+- 🛠️ **Flexible workflows** - NIfTI-based CLI or DICOM wrapper
 
-### 1. Core SVR Pipeline
-- **`svr_cli.py`** - Main SVR reconstruction script (NIfTI input/output)
-- **`svr_dicom.py`** - DICOM wrapper for clinical workflows
-- **`standalone_inlined/`** - Core reconstruction algorithms
+## Installation
 
-### 2. Stack Reorientation
-- **`reorient_stacks.py`** - Standalone stack reorientation utility
-- Uses SimpleITK for consistency with existing workflows
-- Automatically detects and corrects slice-stacking orientation
-- Integrated into both `svr_cli.py` and `svr_dicom.py` by default
+### Prerequisites
 
-### 3. Documentation
-- **`REORIENTATION_INTEGRATION.md`** - How automatic reorientation works
-- **`COMPARISON_WITH_WITHOUT_REORIENT.md`** - Quality comparison with/without reorientation
-- **`SVR_DICOM_README.md`** - DICOM wrapper usage guide
+- Python 3.8 or later (Python 3.10+ recommended)
+- CUDA-compatible GPU with drivers installed (optional but recommended)
+- 8GB+ GPU memory for typical fetal MRI reconstruction
+
+### Setup Steps
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/ajoshiusc/svr_gpu.git
+   cd svr_gpu
+   ```
+
+2. **Create a virtual environment**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
+   ```bash
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+4. **Verify installation**
+   ```bash
+   python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}')"
+   ```
+
+### Notes on Dependencies
+
+- **PyTorch with CUDA**: The default `requirements.txt` installs PyTorch with CUDA 12 support (~3GB download)
+- **CPU-only installation**: If you don't have a GPU, install CPU-only PyTorch:
+  ```bash
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+  pip install numpy nilearn scipy monai scikit-image
+  ```
+- **Different CUDA version**: See [PyTorch installation guide](https://pytorch.org/get-started/locally/) for other CUDA versions
+
+
 
 ## Quick Start
 
-### NIfTI Workflow
+### Option 1: NIfTI Workflow (Recommended for Research)
+
+Use `svr_cli.py` for NIfTI input/output with full control over parameters.
 
 ```bash
+# Activate virtual environment
+source .venv/bin/activate
+
 # Basic reconstruction with automatic reorientation
 python svr_cli.py \
   --input-stacks axial.nii.gz coronal.nii.gz sagittal.nii.gz \
   --output reconstructed.nii.gz \
   --segmentation twai
 
-# Disable auto-reorientation
+# Advanced: disable auto-reorientation if stacks are already aligned
 python svr_cli.py \
   --input-stacks stack1.nii.gz stack2.nii.gz \
   --output result.nii.gz \
@@ -41,105 +80,206 @@ python svr_cli.py \
   --no-auto-reorient
 ```
 
-### DICOM Workflow
+### Option 2: DICOM Workflow (Clinical Use)
+
+Use `svr_dicom.py` for direct DICOM input/output.
 
 ```bash
-# DICOM input/output
+# Activate virtual environment
+source .venv/bin/activate
+
+# Process DICOM series directly
 python svr_dicom.py \
   --input-series \
-    /path/to/study/series_axial/ \
-    /path/to/study/series_coronal/ \
-    /path/to/study/series_sagittal/ \
+    /path/to/dicom/series_axial/ \
+    /path/to/dicom/series_coronal/ \
+    /path/to/dicom/series_sagittal/ \
   --output-dir /path/to/output/ \
   --segmentation twai
 ```
 
-### Standalone Reorientation
+### Option 3: Complete Pipeline with `run_svr_gpu.py`
+
+Use `run_svr_gpu.py` for a fully automated workflow that organizes inputs, runs reconstruction, and saves all outputs in a timestamped directory.
 
 ```bash
-# Reorient stacks only (no reconstruction)
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run complete pipeline
+python run_svr_gpu.py \
+  /path/to/dicom_folder \
+  --output-parent ./results \
+  --study-name MyStudy \
+  --device 0 \
+  --keep-temp
+```
+
+**What this does:**
+- Creates timestamped run directory: `./results/MyStudy_YYYYMMDD_HHMMSS/`
+- Organizes DICOM files by series
+- Auto-detects T2-weighted sequences (SSH_TSE/T2)
+- Converts to NIfTI and runs SVR reconstruction
+- Saves intermediate files and final outputs
+
+**Output structure:**
+```
+MyStudy_20251012_153756/
+├── in/dicom/           # Organized DICOM input
+├── out/
+│   ├── tmp/            # Intermediate NIfTI files
+│   │   └── reconstructions/  # Per-iteration volumes
+│   └── dicom/          # Final DICOM output (if enabled)
+```
+
+
+
+
+## Key Features Explained
+
+### Automatic Stack Reorientation
+
+**Enabled by default** - automatically detects and corrects stack orientations before reconstruction.
+
+**How it works:**
+- Detects the slice-stacking axis (dimension with largest voxel spacing)
+- Reorients all stacks to axial orientation (slices in XY plane, stacked along Z)
+- Ensures consistent coordinate systems across mixed-orientation inputs
+
+**Benefits:**
+- ✅ Improves registration quality (10-15% better similarity scores)
+- ✅ Eliminates "different thicknesses" warnings
+- ✅ Works seamlessly with mixed orientations (axial, coronal, sagittal)
+- ✅ Can be disabled with `--no-auto-reorient` flag
+
+**Performance comparison:**
+
+| Metric | With Reorientation | Without Reorientation |
+|--------|-------------------:|----------------------:|
+| SVoRT similarity | 0.853 | 0.718 |
+| Stack similarity | 0.832 | 0.811 |
+
+### Brain Segmentation
+
+- Uses MONAI-based deep learning models for fetal brain segmentation
+- Compatible with MONAI 0.3.0 and 1.3.0 checkpoint architectures
+- Automatically generates brain masks to improve reconstruction quality
+- Checkpoint files included in `standalone_inlined/checkpoints/`
+
+### GPU Acceleration
+
+- PyTorch + CUDA for fast reconstruction
+- Typical processing time: 5-15 minutes per case (depending on GPU and data size)
+- Supports multi-GPU systems (specify GPU with `--device` flag)
+
+## Utilities and Tools
+
+### Standalone Stack Reorientation
+
+Reorient stacks without running full reconstruction:
+
+```bash
 python reorient_stacks.py \
   --input stack1.nii.gz stack2.nii.gz stack3.nii.gz \
   --output-dir reoriented/
 ```
 
-## Key Features
+### DICOM Organization
 
-### ✅ Automatic Stack Reorientation (NEW!)
-
-**Enabled by default** - automatically detects and corrects stack orientations:
-- ✅ Detects slice-stacking axis (largest voxel dimension)
-- ✅ Reorients to axial (slices in XY plane, stacked along Z)
-- ✅ Improves registration quality (10-15% better similarity scores)
-- ✅ Eliminates "different thicknesses" warnings
-- ✅ Works with mixed orientations (axial, coronal, sagittal)
-- ✅ Uses SimpleITK for consistency with `rotate2makeslice_z.py`
-- ✅ Can be disabled with `--no-auto-reorient` flag
-
-**Comparison:**
-| Metric | With Reorientation | Without Reorientation |
-|--------|-------------------|----------------------|
-| SVoRT similarity | 0.853 | 0.718 |
-| Stack similarity | 0.832 | 0.811 |
-| Warnings | None | "different thicknesses" |
-
-### 🔬 Brain Segmentation
-- MONAI-based fetal brain segmentation
-- Compatible with MONAI 0.3.0 and 1.3.0 architectures
-- Automatic brain masking for reconstruction
-# SVR CLI Minimal
-
-This repository contains utilities to run the SVR (slice-to-volume reconstruction) pipeline.
-
-This README provides a minimal usage example for the helper script `run_svr_gpu.py`, which
-creates a timestamped run directory, organizes DICOMs, converts selected series to NIfTI, and
-invokes the DICOM-driven SVR workflow (`svr_dicom.py`) with `SVR_TEMP_DIR` set so intermediate
-files are stored under the run directory.
-
-Prerequisites
- - Python 3.8+
- - A virtual environment with project dependencies installed (see `requirements.txt` if present).
- - Recommended: CUDA-enabled GPU and PyTorch installed in the same environment
-
-Minimal example: run with a DICOM folder and output parent directory
+Organize DICOM files by study and series:
 
 ```bash
-# from project root
-.venv/bin/python run_svr_gpu.py \
-  /path/to/dicom_input_folder \
-  --output-parent . \
-  --study-name SVR002 \
-  --device 0 \
-  --keep-temp
+python organize_dicom_files.py \
+  --input-dir /path/to/dicoms \
+  --output-dir /path/to/organized
 ```
 
-What the script does
- - Creates a run superdirectory under `--output-parent` named `<study>_YYYYMMDD_HHMMSS`
- - Creates `in/dicom/`, `out/tmp/`, and `out/dicom/` inside the run directory
- - Organizes DICOM series into `in/dicom/<StudyUID>/<SeriesUID>/`
- - Selects SSH_TSE / T2 series (auto-detect) and converts them to NIfTI under `out/tmp/input/`
- - Sets `SVR_TEMP_DIR` to the run `out/tmp` and calls `svr_dicom.py --input-series ... --output-dir <rundir>`
+## Project Structure
 
-Checking outputs
- - The run directory (example): `./SVR002_20251012_153756`
- - Intermediate NIfTI files and per-iteration reconstructions are saved under:
-   `./<rundir>/out/tmp/` (and `./<rundir>/out/tmp/reconstructions/` for per-iteration NIfTIs)
- - Final DICOM output (if enabled) is in `./<rundir>/out/dicom/`
+```
+svr_gpu/
+├── svr_cli.py              # Main NIfTI reconstruction script
+├── svr_dicom.py            # DICOM wrapper script
+├── run_svr_gpu.py          # Complete automated pipeline
+├── reorient_stacks.py      # Standalone reorientation utility
+├── organize_dicom_files.py # DICOM organization utility
+├── requirements.txt        # Python dependencies
+└── standalone_inlined/     # Core algorithms and models
+    ├── assessment/         # Quality metrics (SVoRT, IQA)
+    ├── checkpoints/        # Pre-trained model weights
+    ├── inr/                # Implicit neural representation
+    ├── preprocessing/      # Brain segmentation, bias correction
+    ├── slice_acquisition/  # Forward imaging model
+    ├── svort/              # Slice-to-volume registration transformers
+    ├── svr/                # SVR reconstruction algorithms
+    └── utils/              # Helper functions
+```
 
-Notes
- - This README intentionally focuses on `run_svr_gpu.py` usage. Other documentation in the
-   repository has been removed to keep this project minimal. If you need extended documentation,
-   ask and I can re-add targeted docs for a specific component (DICOM wrapper, reorientation, etc.).
 
-License: (unchanged)
+
+## Troubleshooting
+
+### CUDA/GPU Issues
+
+**Problem:** "CUDA out of memory"
+- **Solution:** Use a smaller batch size or reduce resolution, or use CPU-only mode
+
+**Problem:** "CUDA not available" despite having a GPU
+- **Solution:** Check driver compatibility and reinstall PyTorch with matching CUDA version:
+  ```bash
+  python -c "import torch; print(torch.version.cuda)"  # Check PyTorch CUDA version
+  nvidia-smi  # Check driver CUDA version
+  ```
+
+### Import Errors
+
+**Problem:** `ModuleNotFoundError: No module named 'monai'` or similar
+- **Solution:** Ensure virtual environment is activated and dependencies are installed:
+  ```bash
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  ```
+
+### DICOM Processing Issues
+
+**Problem:** "No T2-weighted series found"
+- **Solution:** Check series descriptions in your DICOM files. You may need to manually specify series with `--input-series`
+
+## Additional Documentation
+
+For more detailed information on specific components:
+- **Reorientation details**: See code comments in `reorient_stacks.py`
+- **DICOM wrapper**: Check `svr_dicom.py` for all available options
+- **Algorithm details**: Refer to the NeSVoR paper and documentation (links below)
+
+
 
 ## Acknowledgements
 
-This project started from the NeSVoR codebase and was adapted to produce a minimal, self-contained
-SVR CLI package focused on DICOM-driven slice-to-volume reconstruction and automatic stack
-reorientation. Many core algorithms and high-level design choices were informed by NeSVoR — thanks
-to its authors for providing a solid starting point.
+This project is based on the [NeSVoR](https://github.com/daviddmc/NeSVoR) codebase and was adapted to create a self-contained, DICOM-focused SVR pipeline with automatic stack reorientation. Many core algorithms and design choices originate from NeSVoR.
 
-Useful links:
-- NeSVoR GitHub: https://github.com/daviddmc/NeSVoR
-- NeSVoR documentation: https://nesvor.readthedocs.io/
+**NeSVoR Resources:**
+- GitHub: https://github.com/daviddmc/NeSVoR
+- Documentation: https://nesvor.readthedocs.io/
+- Paper: [NeSVoR: Implicit Neural Representation for Slice-to-Volume Reconstruction in MRI](https://ieeexplore.ieee.org/document/10015091)
+
+We thank the NeSVoR authors for providing an excellent foundation for GPU-accelerated slice-to-volume reconstruction.
+
+## License
+
+This project maintains the same license as the original NeSVoR codebase. Please refer to the LICENSE file and the original NeSVoR repository for details.
+
+## Citation
+
+If you use this code in your research, please cite the original NeSVoR paper:
+
+```bibtex
+@article{xu2023nesvor,
+  title={NeSVoR: Implicit Neural Representation for Slice-to-Volume Reconstruction in MRI},
+  author={Xu, Junshen and Moyer, Daniel and Gagoski, Borjan and Iglesias, Juan Eugenio and Grant, P Ellen and Golland, Polina and Adalsteinsson, Elfar},
+  journal={IEEE Transactions on Medical Imaging},
+  year={2023},
+  publisher={IEEE}
+}
+```
+
