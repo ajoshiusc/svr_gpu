@@ -1,0 +1,7 @@
+torch
+numpy
+nilearn
+scipy
+monai
+scikit-image
+torchvision
