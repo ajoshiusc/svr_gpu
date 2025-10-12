@@ -5,3 +5,8 @@ scipy
 monai
 scikit-image
 torchvision
+pydicom
+nibabel
+SimpleITK
+pylibjpeg
+pylibjpeg-libjpeg
