@@ -102,6 +102,12 @@ python svr_dicom.py \
 
 Use `run_svr_gpu.py` for a fully automated workflow that organizes inputs, runs reconstruction, and saves all outputs in a timestamped directory.
 
+**Command syntax:**
+```bash
+python run_svr_gpu.py DICOM_DIR OUTPUT_PARENT [OPTIONS]
+```
+
+**Example:**
 ```bash
 # Activate virtual environment
 source .venv/bin/activate
@@ -109,8 +115,18 @@ source .venv/bin/activate
 # Run complete pipeline
 python run_svr_gpu.py \
   /path/to/dicom_folder \
-  --output-parent ./results \
+  ./results \
   --study-name MyStudy \
+  --device 0 \
+  --keep-temp
+```
+
+**Real example with CHLA data:**
+```bash
+python run_svr_gpu.py \
+  /deneb_disk/chla_data_2_21_2023/unzipped_dicomms/SVR001 \
+  . \
+  --study-name SVR001 \
   --device 0 \
   --keep-temp
 ```
