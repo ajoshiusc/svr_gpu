@@ -29,6 +29,8 @@ def main():
     p.add_argument("--segmentation", default="twai", help="Segmentation method to pass to svr_dicom.py")
     p.add_argument("--keep-temp", action="store_true", help="Pass --keep-temp to svr_dicom.py to retain temp files")
     p.add_argument("--device", default=None, help="Device id to pass to svr_dicom.py (optional)")
+    p.add_argument("--batch-size-seg", type=int, default=None, help="Segmentation batch size to pass to svr_dicom.py")
+    p.add_argument("--max-series", type=int, default=None, help="Maximum number of series to use (prioritized)")
     args = p.parse_args()
 
     raw_input = Path(args.dicom_dir).expanduser().resolve()
@@ -101,25 +103,57 @@ def main():
         except Exception:
             continue
 
-    # prefer SSH_TSE T2-weighted sequences
-    ssh_tse_series = [s for s in series_info if 'SSH_TSE' in s['description'].upper() or 'SSHTSE' in s['description'].upper()]
-    exclude_keywords = ['LOCAL', 'DTI', 'DWI', 'TRACE', 'ADC', 'FA', 'MRCP', 'T1', 'FLAIR', 'BTFE', 'BH']
-    ssh_tse_series = [s for s in ssh_tse_series if not any(ex in s['description'].upper() for ex in exclude_keywords)]
 
+    # Highest priority: series with BOTH 'BRAIN' and ('TSE', 'SSH_TSE', 'SSHTSE', 'T2') in description
+    tse_keywords = ['TSE', 'SSH_TSE', 'SSHTSE', 'T2']
+    exclude_keywords = ['LOCAL', 'DTI', 'DWI', 'TRACE', 'ADC', 'FA', 'MRCP', 'T1', 'FLAIR', 'BTFE', 'BH']
+    both_brain_tse = [
+        s for s in series_info
+        if 'BRAIN' in s['description'].upper()
+        and any(kw in s['description'].upper() for kw in tse_keywords)
+        and not any(ex in s['description'].upper() for ex in exclude_keywords)
+    ]
+    # Next: series with any of BRAIN/HEAD/TSE/SSH_TSE/SSHTSE/T2
+    priority_keywords = ['BRAIN', 'HEAD', 'TSE', 'SSH_TSE', 'SSHTSE', 'T2']
+    priority_series_candidates = [
+        s for s in series_info
+        if any(kw in s['description'].upper() for kw in priority_keywords)
+        and not any(ex in s['description'].upper() for ex in exclude_keywords)
+        and s not in both_brain_tse
+    ]
     priority_series = []
-    if ssh_tse_series:
-        for orientation in ['AXIAL', 'AX ', 'COR', 'SAG']:
-            for s in ssh_tse_series:
-                desc_words = s['description'].upper().split()
-                if orientation in desc_words or orientation in s['description'].upper()[:20]:
-                    if s not in priority_series:
-                        priority_series.append(s)
-                        break
-    else:
-        # fallback: any T2-weighted series
+    # Add all both_brain_tse series first (by orientation)
+    for orientation in ['AXIAL', 'AX ', 'COR', 'SAG']:
+        for s in both_brain_tse:
+            desc_words = s['description'].upper().split()
+            if orientation in desc_words or orientation in s['description'].upper()[:20]:
+                if s not in priority_series:
+                    priority_series.append(s)
+                    break
+    for s in both_brain_tse:
+        if s not in priority_series:
+            priority_series.append(s)
+            if args.max_series is not None and len(priority_series) >= args.max_series:
+                break
+    # Then add other priority candidates (by orientation)
+    for orientation in ['AXIAL', 'AX ', 'COR', 'SAG']:
+        for s in priority_series_candidates:
+            desc_words = s['description'].upper().split()
+            if orientation in desc_words or orientation in s['description'].upper()[:20]:
+                if s not in priority_series:
+                    priority_series.append(s)
+                    break
+    for s in priority_series_candidates:
+        if s not in priority_series:
+            priority_series.append(s)
+            if args.max_series is not None and len(priority_series) >= args.max_series:
+                break
+    # If still not enough and max_series not reached, continue as before
+    if not priority_series:
+        # 3. Fallback: any T2-weighted series
         t2_keywords = ['T2', 'TSE', 'HASTE', 'SSFSE', 'FIESTA']
-        exclude_keywords = ['LOCAL', 'DTI', 'DWI', 'TRACE', 'ADC', 'FA', 'T1', 'FLAIR', 'MRCP']
-        t2_series = [s for s in series_info if any(kw in s['description'].upper() for kw in t2_keywords) and not any(ex in s['description'].upper() for ex in exclude_keywords)]
+        t2_exclude_keywords = ['LOCAL', 'DTI', 'DWI', 'TRACE', 'ADC', 'FA', 'T1', 'FLAIR', 'MRCP']
+        t2_series = [s for s in series_info if any(kw in s['description'].upper() for kw in t2_keywords) and not any(ex in s['description'].upper() for ex in t2_exclude_keywords)]
         for orientation in ['AXIAL', 'AX', 'COR', 'SAG']:
             for s in t2_series:
                 if orientation in s['description'].upper() and s not in priority_series:
@@ -134,10 +168,28 @@ def main():
                     priority_series.append(s)
                     if len(priority_series) >= 4:
                         break
+            # 3. Fallback: any T2-weighted series
+            t2_keywords = ['T2', 'TSE', 'HASTE', 'SSFSE', 'FIESTA']
+            exclude_keywords = ['LOCAL', 'DTI', 'DWI', 'TRACE', 'ADC', 'FA', 'T1', 'FLAIR', 'MRCP']
+            t2_series = [s for s in series_info if any(kw in s['description'].upper() for kw in t2_keywords) and not any(ex in s['description'].upper() for ex in exclude_keywords)]
+            for orientation in ['AXIAL', 'AX', 'COR', 'SAG']:
+                for s in t2_series:
+                    if orientation in s['description'].upper() and s not in priority_series:
+                        priority_series.append(s)
+                        if len(priority_series) >= 4:
+                            break
+                if len(priority_series) >= 4:
+                    break
+            if len(priority_series) < 3:
+                for s in t2_series:
+                    if s not in priority_series:
+                        priority_series.append(s)
+                        if len(priority_series) >= 4:
+                            break
 
-    if not priority_series:
-        # very last fallback: any series with BRAIN or HEAD in description
-        priority_series = [s for s in series_info if 'BRAIN' in s['description'].upper() or 'HEAD' in s['description'].upper()][:4]
+    # Apply max-series limit if set and not already applied
+    if args.max_series is not None:
+        priority_series = priority_series[:args.max_series]
 
     if not priority_series:
         print('ERROR: No suitable series found in in/dicom/')
@@ -148,6 +200,7 @@ def main():
         print(f"  - {s['description']} -> {s['path']}")
 
     # build command with --input-series
+
     svr_cmd = [
         str(Path.cwd() / '.venv' / 'bin' / 'python'),
         str(Path.cwd() / 'svr_dicom.py'),
@@ -157,6 +210,8 @@ def main():
         '--segmentation', args.segmentation
     ]
 
+    if args.batch_size_seg is not None:
+        svr_cmd.extend(['--batch-size-seg', str(args.batch_size_seg)])
     if args.keep_temp:
         svr_cmd.append('--keep-temp')
     if args.device is not None:
