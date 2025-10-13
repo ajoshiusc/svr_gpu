@@ -578,7 +578,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--output', '--output-volume', dest='output_volume',
                         help='Output volume path')
     parser.add_argument('--device', type=int, default=0,
-                        help='CUDA device ID (default: 0)')
+                        help='CUDA device ID (default: 0). Use -1 to force CPU.')
 
     # Preprocessing arguments
     parser.add_argument('--stack-masks', nargs='+', default=None,
@@ -687,7 +687,10 @@ def main():
     args = parser.parse_args()
 
     # Setup device
-    if torch.cuda.is_available():
+    if isinstance(args.device, int) and args.device == -1:
+        args.device = torch.device('cpu')
+        logger.info("Using CPU device (requested by --device -1)")
+    elif torch.cuda.is_available():
         args.device = torch.device(f'cuda:{args.device}')
         logger.info(f"Using CUDA device: {args.device}")
     else:
