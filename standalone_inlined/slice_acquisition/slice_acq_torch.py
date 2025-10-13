@@ -2,12 +2,11 @@ from typing import Optional, Sequence, cast
 import logging
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
 
 from ..image import Volume, Slice
 from ..transform import mat_transform_points
 
-BATCH_SIZE = 16
+BATCH_SIZE = 64
 
 
 def _construct_coef(
@@ -130,18 +129,17 @@ def slice_acquisition_torch(
     while i < transforms.shape[0]:
         succ = False
         try:
-            with autocast():
-                coef = _construct_coef(
-                    list(range(i, min(i + BATCH_SIZE, transforms.shape[0]))),
-                    transforms,
-                    vol_shape,
-                    slice_shape,
-                    vol_mask,
-                    slices_mask,
-                    psf,
-                    res_slice,
-                )
-            # Sparse operations don't support Half precision, so keep outside autocast
+            # Build sparse coefficients in full precision for numerical stability
+            coef = _construct_coef(
+                list(range(i, min(i + BATCH_SIZE, transforms.shape[0]))),
+                transforms,
+                vol_shape,
+                slice_shape,
+                vol_mask,
+                slices_mask,
+                psf,
+                res_slice,
+            )
             s = torch.mv(coef, vol.view(-1)).to_dense().reshape((-1, 1) + slice_shape)
             weight = torch.sparse.sum(coef, 1).to_dense().reshape_as(s)
             del coef
@@ -191,18 +189,17 @@ def slice_acquisition_adjoint_torch(
     while i < transforms.shape[0]:
         succ = False
         try:
-            with autocast():
-                coef = _construct_coef(
-                    list(range(i, min(i + BATCH_SIZE, transforms.shape[0]))),
-                    transforms,
-                    vol_shape,
-                    slice_shape,
-                    vol_mask,
-                    slices_mask,
-                    psf,
-                    res_slice,
-                ).t()
-            # Sparse operations don't support Half precision, so keep outside autocast
+            # Build sparse coefficients in full precision for numerical stability
+            coef = _construct_coef(
+                list(range(i, min(i + BATCH_SIZE, transforms.shape[0]))),
+                transforms,
+                vol_shape,
+                slice_shape,
+                vol_mask,
+                slices_mask,
+                psf,
+                res_slice,
+            ).t()
             v = torch.mv(coef, slices[i : i + BATCH_SIZE].view(-1))
             if equalize:
                 w = torch.sparse.sum(coef, 1)
@@ -252,28 +249,27 @@ def slice_acquisition_no_psf_torch(
     _slice = torch.ones((1,) + slice_shape, dtype=torch.bool, device=device)
     slice_xyz = Slice(_slice, _slice, resolution_x=res_slice).xyz_masked_untransformed
     
-    with autocast():
-        slice_xyz = mat_transform_points(
-            transforms[:, None], slice_xyz[None], trans_first=True
-        ).view((transforms.shape[0], 1) + slice_shape + (3,))
+    # Perform transforms and interpolation in full precision
+    slice_xyz = mat_transform_points(
+        transforms[:, None], slice_xyz[None], trans_first=True
+    ).view((transforms.shape[0], 1) + slice_shape + (3,))
 
-        output_slices = torch.zeros_like(slice_xyz[..., 0])
+    output_slices = torch.zeros_like(slice_xyz[..., 0])
 
-        if slices_mask is not None:
-            masked_xyz = slice_xyz[slices_mask]
-        else:
-            masked_xyz = slice_xyz
+    if slices_mask is not None:
+        masked_xyz = slice_xyz[slices_mask]
+    else:
+        masked_xyz = slice_xyz
 
-        masked_xyz = masked_xyz / (
-            (torch.tensor(vol.shape[-3:][::-1], dtype=masked_xyz.dtype, device=device) - 1)
-            / 2
-        )
-        if vol_mask is not None:
-            vol = vol * vol_mask
-        masked_v = F.grid_sample(vol, masked_xyz.view(1, 1, 1, -1, 3), align_corners=True)
+    masked_xyz = masked_xyz / (
+        (torch.tensor(vol.shape[-3:][::-1], dtype=masked_xyz.dtype, device=device) - 1)
+        / 2
+    )
+    if vol_mask is not None:
+        vol = vol * vol_mask
+    masked_v = F.grid_sample(vol, masked_xyz.view(1, 1, 1, -1, 3), align_corners=True)
     
     if slices_mask is not None:
-        # Ensure dtype consistency when autocast might change precision
         output_slices[slices_mask] = masked_v.to(output_slices.dtype)
     else:
         output_slices = masked_v.reshape((transforms.shape[0], 1) + slice_shape)
