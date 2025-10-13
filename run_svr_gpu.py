@@ -26,6 +26,8 @@ def main():
     p.add_argument("dicom_dir", help="Path to raw DICOM directory (unzipped)")
     p.add_argument("output_parent", help="Path where the SVR superdir will be created")
     p.add_argument("--study-name", default="SVR", help="Study prefix for the superdir (default: SVR)")
+    p.add_argument("--max-stacks", type=int, default=50,
+                   help="Maximum number of stacks to select (default: 50, use 0 for unlimited)")
     p.add_argument("--segmentation", default="twai", help="Segmentation method to pass to svr_dicom.py")
     p.add_argument("--keep-temp", action="store_true", help="Pass --keep-temp to svr_dicom.py to retain temp files")
     p.add_argument("--device", default=None, help="Device id to pass to svr_dicom.py (optional)")
@@ -108,8 +110,18 @@ def main():
 
     priority_series = []
     if ssh_tse_series:
+        # First, prioritize BRAIN series over WHOLE BODY
+        brain_ssh_tse = [s for s in ssh_tse_series if 'BRAIN' in s['description'].upper()]
+        whole_body_ssh_tse = [s for s in ssh_tse_series if 'WHOLE BODY' in s['description'].upper()]
+        
+        # Include all brain SSH_TSE series first
+        for s in brain_ssh_tse:
+            if s not in priority_series:
+                priority_series.append(s)
+        
+        # Then add whole body series by orientation if we need more
         for orientation in ['AXIAL', 'AX ', 'COR', 'SAG']:
-            for s in ssh_tse_series:
+            for s in whole_body_ssh_tse:
                 desc_words = s['description'].upper().split()
                 if orientation in desc_words or orientation in s['description'].upper()[:20]:
                     if s not in priority_series:
@@ -124,20 +136,18 @@ def main():
             for s in t2_series:
                 if orientation in s['description'].upper() and s not in priority_series:
                     priority_series.append(s)
-                    if len(priority_series) >= 4:
-                        break
-            if len(priority_series) >= 4:
-                break
         if len(priority_series) < 3:
             for s in t2_series:
                 if s not in priority_series:
                     priority_series.append(s)
-                    if len(priority_series) >= 4:
-                        break
 
     if not priority_series:
         # very last fallback: any series with BRAIN or HEAD in description
-        priority_series = [s for s in series_info if 'BRAIN' in s['description'].upper() or 'HEAD' in s['description'].upper()][:4]
+        priority_series = [s for s in series_info if 'BRAIN' in s['description'].upper() or 'HEAD' in s['description'].upper()]
+
+    # Apply max_stacks limit if specified
+    if args.max_stacks > 0 and len(priority_series) > args.max_stacks:
+        priority_series = priority_series[:args.max_stacks]
 
     if not priority_series:
         print('ERROR: No suitable series found in in/dicom/')

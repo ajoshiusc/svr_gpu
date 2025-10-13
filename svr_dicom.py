@@ -78,54 +78,69 @@ def dicom_series_to_nifti(dicom_files: List[str], output_path: str) -> Tuple[str
     Returns:
         Tuple of (output_path, metadata_dict)
     """
-    # Read first DICOM to get metadata
-    ds_first = pydicom.dcmread(dicom_files[0])
-    
-    # Read all slices
-    slices = []
-    for dcm_path in dicom_files:
-        ds = pydicom.dcmread(dcm_path)
-        slices.append(ds.pixel_array.astype(np.float32))
-    
-    # Stack into 3D volume
-    volume = np.stack(slices, axis=-1)  # Shape: (rows, cols, slices)
-    
-    # Get voxel spacing
-    pixel_spacing = ds_first.PixelSpacing  # [row_spacing, col_spacing]
-    slice_thickness = float(ds_first.SliceThickness) if hasattr(ds_first, 'SliceThickness') else 1.0
-    
-    # Create affine matrix
-    affine = np.eye(4)
-    affine[0, 0] = float(pixel_spacing[1])  # column spacing -> x
-    affine[1, 1] = float(pixel_spacing[0])  # row spacing -> y
-    affine[2, 2] = slice_thickness  # slice spacing -> z
-    
-    # Center the volume
-    affine[0, 3] = -affine[0, 0] * volume.shape[0] / 2
-    affine[1, 3] = -affine[1, 1] * volume.shape[1] / 2
-    affine[2, 3] = -affine[2, 2] * volume.shape[2] / 2
-    
-    # Create NIfTI image
-    nii_img = nib.Nifti1Image(volume, affine)
-    nii_img.header.set_xyzt_units(2)  # mm
-    
-    # Save NIfTI
-    nib.save(nii_img, output_path)
-    logger.info(f"  Converted to NIfTI: {os.path.basename(output_path)}")
-    logger.info(f"    Shape: {volume.shape}, Spacing: ({pixel_spacing[1]:.2f}, {pixel_spacing[0]:.2f}, {slice_thickness:.2f}) mm")
-    
-    # Store metadata
-    metadata = {
-        'StudyInstanceUID': str(ds_first.StudyInstanceUID),
-        'SeriesInstanceUID': str(ds_first.SeriesInstanceUID),
-        'SeriesDescription': str(getattr(ds_first, 'SeriesDescription', 'Unknown')),
-        'PatientID': str(getattr(ds_first, 'PatientID', 'Unknown')),
-        'PatientName': str(getattr(ds_first, 'PatientName', 'Unknown')),
-        'StudyDate': str(getattr(ds_first, 'StudyDate', '')),
-        'Modality': str(getattr(ds_first, 'Modality', 'MR')),
-    }
-    
-    return output_path, metadata
+    # Skip conversion if less than 3 slices
+    if len(dicom_files) < 3:
+        logger.info(f"Skipping series with only {len(dicom_files)} slices (less than 3): {os.path.dirname(dicom_files[0])}")
+        return None, None
+
+    import dicom2nifti
+    import dicom2nifti.settings as settings
+    import glob
+    # Assume all DICOM files are from the same series directory
+    series_dir = os.path.dirname(dicom_files[0])
+    temp_out_dir = tempfile.mkdtemp(prefix="dcm2nii_")
+    try:
+        # Disable strict slice increment validation to handle variable spacing
+        settings.disable_validate_slice_increment()
+        dicom2nifti.convert_directory(series_dir, temp_out_dir, compression=True)
+        # Find the generated NIfTI file (should be only one for a single series)
+        nii_files = glob.glob(os.path.join(temp_out_dir, '*.nii.gz'))
+        if not nii_files:
+            raise RuntimeError(f"dicom2nifti did not produce a NIfTI file for {series_dir}")
+        # Robust NIfTI validation
+        import nibabel as nib
+        import numpy as np
+        try:
+            nii_img = nib.load(nii_files[0])
+            shape = nii_img.shape
+            logger.info(f"Loaded NIfTI shape: {shape} from {nii_files[0]}")
+            # Explicitly skip if any dimension is zero
+            if any(dim == 0 for dim in shape):
+                logger.info(f"Skipping series at {series_dir} because NIfTI has a zero dimension (shape: {shape})")
+                return None, None
+            # Only accept 3D (or 4D with 1 in 4th dim) NIfTI
+            if not (len(shape) == 3 or (len(shape) == 4 and shape[3] == 1)):
+                logger.info(f"Skipping series at {series_dir} because NIfTI is not strictly 3D (shape: {shape})")
+                return None, None
+            if any(dim <= 1 for dim in shape[:3]):
+                logger.info(f"Skipping series at {series_dir} because NIfTI has a singular or one-sized dimension (shape: {shape})")
+                return None, None
+            data = nii_img.get_fdata()
+            if np.isnan(data).any() or np.isinf(data).any():
+                logger.info(f"Skipping series at {series_dir} because NIfTI contains NaN or Inf values (shape: {shape})")
+                return None, None
+            if np.all(data == 0):
+                logger.info(f"Skipping series at {series_dir} because NIfTI is all zeros (shape: {shape})")
+                return None, None
+        except Exception as e:
+            logger.info(f"Skipping series at {series_dir} due to NIfTI load/validation error: {e}")
+            return None, None
+        shutil.move(nii_files[0], output_path)
+        logger.info(f"  Converted to NIfTI using dicom2nifti: {os.path.basename(output_path)}")
+        # Read first DICOM for metadata
+        ds_first = pydicom.dcmread(dicom_files[0])
+        metadata = {
+            'StudyInstanceUID': str(ds_first.StudyInstanceUID),
+            'SeriesInstanceUID': str(ds_first.SeriesInstanceUID),
+            'SeriesDescription': str(getattr(ds_first, 'SeriesDescription', 'Unknown')),
+            'PatientID': str(getattr(ds_first, 'PatientID', 'Unknown')),
+            'PatientName': str(getattr(ds_first, 'PatientName', 'Unknown')),
+            'StudyDate': str(getattr(ds_first, 'StudyDate', '')),
+            'Modality': str(getattr(ds_first, 'Modality', 'MR')),
+        }
+        return output_path, metadata
+    finally:
+        shutil.rmtree(temp_out_dir)
 
 
 def nifti_to_dicom_series(nifti_path: str, output_dir: str, reference_metadata: dict, 
@@ -259,19 +274,22 @@ def nifti_to_dicom_series(nifti_path: str, output_dir: str, reference_metadata: 
         # Set pixel data
         ds.PixelData = slice_data.tobytes()
 
-        # Set file meta information
+        # Set file meta information (use Explicit VR Little Endian)
         ds.file_meta = pydicom.dataset.FileMetaDataset()
+        ds.file_meta.FileMetaInformationVersion = b"\x00\x01"
         ds.file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
         ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
         ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
-        ds.file_meta.ImplementationClassUID = pydicom.uid.generate_uid()
+        # Use pydicom's implementation UID and a simple version name
+        try:
+            ds.file_meta.ImplementationClassUID = pydicom.uid.PYDICOM_IMPLEMENTATION_UID
+        except AttributeError:
+            ds.file_meta.ImplementationClassUID = pydicom.uid.generate_uid()
+        ds.file_meta.ImplementationVersionName = "SVR_GPU_1"
 
-        ds.is_little_endian = True
-        ds.is_implicit_VR = False
-
-        # Save DICOM file
+        # Save DICOM file with explicit formatting
         output_file = output_series_dir / f"{ds.SOPInstanceUID}.dcm"
-        ds.save_as(str(output_file), write_like_original=False)
+        pydicom.dcmwrite(str(output_file), ds, enforce_file_format=True)
     
     logger.info(f"  Created {num_slices} DICOM slices")
     logger.info(f"  Series directory: {output_series_dir}")
@@ -405,15 +423,18 @@ def main():
         
         for i, series_dir in enumerate(args.input_series):
             logger.info(f"\nProcessing series {i+1}/{len(args.input_series)}: {series_dir}")
-            
+
             # Collect DICOM files
             dicom_files = collect_dicom_files(series_dir)
-            
+
             # Convert to NIfTI
             nifti_path = temp_input_dir / f"stack_{i:02d}.nii.gz"
-            nifti_path, metadata = dicom_series_to_nifti(dicom_files, str(nifti_path))
-            nifti_inputs.append(nifti_path)
-            all_metadata.append(metadata)
+            result_path, metadata = dicom_series_to_nifti(dicom_files, str(nifti_path))
+            if result_path is not None and metadata is not None:
+                nifti_inputs.append(result_path)
+                all_metadata.append(metadata)
+            else:
+                logger.info(f"Series {series_dir} skipped due to invalid NIfTI output.")
         
         # Step 2: Run SVR reconstruction
         logger.info("\n" + "=" * 60)

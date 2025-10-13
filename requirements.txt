@@ -10,3 +10,4 @@ nibabel
 SimpleITK
 pylibjpeg
 pylibjpeg-libjpeg
+dicom2nifti
