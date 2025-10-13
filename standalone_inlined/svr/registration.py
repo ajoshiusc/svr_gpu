@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import autocast, GradScaler
 from ..transform import RigidTransform, axisangle2mat, mat_update_resolution
 from ..loss import ncc_loss
 from ..misc import gaussian_blur, meshgrid, resample
@@ -31,6 +32,9 @@ class Registration(nn.Module):
         self._degree2rad = torch.tensor(
             [np.pi / 180, np.pi / 180, np.pi / 180, 1, 1, 1],
         ).view(1, 6)
+        
+        # Initialize AMP scaler for mixed precision training
+        self.scaler = GradScaler()
 
         # init loss
         if loss is None:
@@ -207,9 +211,10 @@ class Registration(nn.Module):
     def evaluate(
         self, theta: torch.Tensor, source: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
-        warpped, target = self.warp(theta, source, target)
-        loss = self.loss(warpped, target)
-        loss = loss.view(loss.shape[0], -1).mean(1)
+        with autocast():
+            warpped, target = self.warp(theta, source, target)
+            loss = self.loss(warpped, target)
+            loss = loss.view(loss.shape[0], -1).mean(1)
         return loss
 
     def optimizer_step(self, grad: torch.Tensor) -> torch.Tensor:
@@ -396,27 +401,28 @@ class SliceToVolumeRegistration(Registration):
     def warp(
         self, theta: torch.Tensor, source: torch.Tensor, target: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        transforms = axisangle2mat(self.degree2rad(theta))
-        transforms = mat_update_resolution(transforms, 1, self.res_v)
-        volume = source
-        slices = target
-        slices_mask: Optional[torch.Tensor]
-        if self.slices_mask_resampled is not None:
-            slices_mask = self.slices_mask_resampled[self.activate_idx]
-            slices = slices * slices_mask
-        else:
-            slices_mask = None
-        warpped = slice_acquisition(
-            transforms,
-            volume,
-            self.volume_mask,
-            slices_mask,
-            self.psf,
-            slices.shape[-2:],
-            self.res_s * (2**self.current_level) / self.res_v,
-            False,
-            False,
-        )
+        with autocast():
+            transforms = axisangle2mat(self.degree2rad(theta))
+            transforms = mat_update_resolution(transforms, 1, self.res_v)
+            volume = source
+            slices = target
+            slices_mask: Optional[torch.Tensor]
+            if self.slices_mask_resampled is not None:
+                slices_mask = self.slices_mask_resampled[self.activate_idx]
+                slices = slices * slices_mask
+            else:
+                slices_mask = None
+            warpped = slice_acquisition(
+                transforms,
+                volume,
+                self.volume_mask,
+                slices_mask,
+                self.psf,
+                slices.shape[-2:],
+                self.res_s * (2**self.current_level) / self.res_v,
+                False,
+                False,
+            )
         return warpped, slices
 
     def forward(
