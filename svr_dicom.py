@@ -21,6 +21,7 @@ from typing import List, Tuple
 import pydicom
 import numpy as np
 import nibabel as nib
+import re
 
 # Set up logging
 logging.basicConfig(
@@ -29,6 +30,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_name(name: str) -> str:
+    """Sanitize a name to be filesystem-safe for filenames.
+
+    - Replace non-alphanumeric characters with underscores (keep dash and underscore)
+    - Collapse multiple separators
+    - Strip leading/trailing separators
+    - Fallback to 'series' if empty
+    """
+    if name is None:
+        name = ""
+    # Replace whitespace with underscores
+    name = re.sub(r"\s+", "_", str(name))
+    # Allow only letters, numbers, underscore, dash
+    name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
+    # Collapse multiple underscores/dashes
+    name = re.sub(r"[_\-]{2,}", "_", name)
+    # Strip leading/trailing underscores/dashes
+    name = name.strip("_-")
+    if not name:
+        name = "series"
+    return name
 
 def collect_dicom_files(series_dir: str) -> List[str]:
     """
@@ -423,15 +446,33 @@ def main():
         nifti_inputs = []
         all_metadata = []
         
+        used_names = set()
         for i, series_dir in enumerate(args.input_series):
             logger.info(f"\nProcessing series {i+1}/{len(args.input_series)}: {series_dir}")
             
             # Collect DICOM files
             dicom_files = collect_dicom_files(series_dir)
             
+            # Determine output NIfTI name from original DICOM SeriesDescription or folder name
+            try:
+                ds0 = pydicom.dcmread(dicom_files[0], stop_before_pixels=True)
+                series_desc = getattr(ds0, 'SeriesDescription', None)
+            except Exception:
+                series_desc = None
+            base_name = _sanitize_name(series_desc) if series_desc else _sanitize_name(Path(series_dir).name)
+            # Ensure uniqueness
+            uniq_name = base_name
+            suffix = 1
+            while uniq_name in used_names or (temp_input_dir / f"{uniq_name}.nii.gz").exists():
+                uniq_name = f"{base_name}_{suffix}"
+                suffix += 1
+            used_names.add(uniq_name)
             # Convert to NIfTI
-            nifti_path = temp_input_dir / f"stack_{i:02d}.nii.gz"
+            nifti_path = temp_input_dir / f"{uniq_name}.nii.gz"
             nifti_path, metadata = dicom_series_to_nifti(dicom_files, str(nifti_path))
+            if nifti_path is None:
+                logger.info(f"Skipping series {series_dir} after validation.")
+                continue
             nifti_inputs.append(nifti_path)
             all_metadata.append(metadata)
         
