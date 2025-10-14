@@ -187,25 +187,12 @@ MyStudy_20251012_153756/
 - Reorients all stacks to axial orientation (slices in XY plane, stacked along Z)
 - Ensures consistent coordinate systems across mixed-orientation inputs
 
-**Benefits:**
-- ✅ Improves registration quality (10-15% better similarity scores)
-- ✅ Eliminates "different thicknesses" warnings
-- ✅ Works seamlessly with mixed orientations (axial, coronal, sagittal)
-- ✅ Can be disabled with `--no-auto-reorient` flag
-
-**Performance comparison:**
-
-| Metric | With Reorientation | Without Reorientation |
-|--------|-------------------:|----------------------:|
-| SVoRT similarity | 0.853 | 0.718 |
-| Stack similarity | 0.832 | 0.811 |
-
 ### Brain Segmentation
 
 - Uses MONAI-based deep learning models for fetal brain segmentation
-- Compatible with MONAI 0.3.0 and 1.3.0 checkpoint architectures
+- Compatible with MONAI 1.3.0 checkpoint architectures
 - Automatically generates brain masks to improve reconstruction quality
-- Checkpoint files included in `standalone_inlined/checkpoints/`
+- Automatically reorients the reconstructed brain to the standard orientation
 
 ### Intelligent Series Selection
 
