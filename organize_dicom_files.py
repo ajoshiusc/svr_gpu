@@ -30,7 +30,12 @@ def organize_dicom_directory(input_dir, output_dir, series_filter=None, verbose=
     dicom_files = []
     for root, dirs, files in os.walk(input_path):
         for file in files:
-            if file.endswith('.dcm') or file.startswith('IM-'):
+            # Accept common DICOM filename patterns:
+            # - .dcm extension
+            # - .ima extension (Siemens)
+            # - starts with IM-
+            lower = file.lower()
+            if lower.endswith('.dcm') or lower.endswith('.ima') or file.startswith('IM-'):
                 dicom_files.append(Path(root) / file)
     
     if verbose:
