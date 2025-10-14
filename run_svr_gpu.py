@@ -40,7 +40,7 @@ def main():
     p.add_argument("--keep-temp", action="store_true", help="Pass --keep-temp to svr_dicom.py to retain temp files")
     p.add_argument("--device", default=None, help="Device id to pass to svr_dicom.py (optional)")
     p.add_argument("--batch-size-seg", type=int, default=None, help="Segmentation batch size to pass to svr_dicom.py")
-    p.add_argument("--max-series", type=int, default=None, help="Maximum number of series to use (prioritized)")
+    p.add_argument("--max-series", type=int, default=4, help="Maximum number of series to use (prioritized) (default: 4)")
     args = p.parse_args()
 
     raw_input = Path(args.dicom_dir).expanduser().resolve()

@@ -110,7 +110,7 @@ python run_svr_gpu.py DICOM_DIR OUTPUT_PARENT [OPTIONS]
 **Key options:**
 - `--device N`: GPU device ID (0, 1, ...) or -1 for CPU-only
 - `--batch-size-seg N`: Segmentation batch size (default: 16, use 4-8 for memory-constrained systems)
-- `--max-series N`: Limit number of series to process (prioritizes brain+TSE sequences)
+- `--max-series N`: Limit number of series to process (prioritizes brain+TSE sequences) (default: 4)
 - `--no-augmentation-seg`: Disable segmentation augmentation for faster CPU processing
 - `--keep-temp`: Keep intermediate NIfTI files for inspection
 - `--study-name NAME`: Custom name for output directory
