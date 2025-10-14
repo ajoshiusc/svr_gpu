@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """
-Prepare a run directory structure and execute the SVR workflow.
+Complete automated SVR pipeline with DICOM organization and reconstruction.
 
 Usage:
-  run_svr_gpu.py /path/to/raw_dicom_dir /path/to/output_parent_dir [--study-name NAME] [--segmentation twai]
+  run_svr_gpu.py /path/to/raw_dicom_dir /path/to/output_parent_dir [OPTIONS]
 
-This script will create a timestamped super-directory under the provided output parent dir
-and populate the following structure inside it:
-  <superdir>/in/dicom
-  <superdir>/out/tmp
-  <superdir>/out/dicom
+This script provides a complete end-to-end SVR workflow:
+1. Creates timestamped run directory under output_parent_dir
+2. Organizes DICOM files by series with intelligent T2/brain sequence detection
+3. Prioritizes series containing both "BRAIN" and T2-weighted terms
+4. Converts to NIfTI with preserved original series names
+5. Runs SVR reconstruction with GPU or CPU
+6. Outputs final DICOM series
 
-It will call `organize_dicom_files.py` to organize the raw DICOMs into `in/dicom`, then run
-the existing `svr_dicom.py` workflow, setting `SVR_TEMP_DIR` to the run tmp directory.
+Directory structure created:
+  <superdir>/in/dicom/        # Organized DICOM input by series
+  <superdir>/out/tmp/input/   # NIfTI stacks with original names (if --keep-temp)
+  <superdir>/out/dicom/       # Final DICOM output series
+
+Key features:
+- Memory optimization via --batch-size-seg and --max-series
+- CPU support with --device -1
+- Original series name preservation
+- Intelligent series prioritization for brain T2-weighted sequences
 """
 import sys
 from pathlib import Path

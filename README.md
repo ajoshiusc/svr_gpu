@@ -107,6 +107,14 @@ Use `run_svr_gpu.py` for a fully automated workflow that organizes inputs, runs 
 python run_svr_gpu.py DICOM_DIR OUTPUT_PARENT [OPTIONS]
 ```
 
+**Key options:**
+- `--device N`: GPU device ID (0, 1, ...) or -1 for CPU-only
+- `--batch-size-seg N`: Segmentation batch size (default: 16, use 4-8 for memory-constrained systems)
+- `--max-series N`: Limit number of series to process (prioritizes brain+TSE sequences)
+- `--no-augmentation-seg`: Disable segmentation augmentation for faster CPU processing
+- `--keep-temp`: Keep intermediate NIfTI files for inspection
+- `--study-name NAME`: Custom name for output directory
+
 **Example:**
 ```bash
 # Activate virtual environment
@@ -123,29 +131,46 @@ python run_svr_gpu.py \
 
 **Real example with CHLA data:**
 ```bash
+# GPU run with memory optimization
 python run_svr_gpu.py \
   /deneb_disk/chla_data_2_21_2023/unzipped_dicomms/SVR001 \
   . \
   --study-name SVR001 \
   --device 0 \
+  --batch-size-seg 8 \
+  --max-series 5 \
+  --keep-temp
+
+# CPU run (slower but no GPU required)
+python run_svr_gpu.py \
+  /deneb_disk/chla_data_2_21_2023/unzipped_dicomms/SVR005 \
+  . \
+  --study-name SVR005 \
+  --device -1 \
+  --batch-size-seg 4 \
+  --max-series 7 \
+  --no-augmentation-seg \
   --keep-temp
 ```
 
 **What this does:**
 - Creates timestamped run directory: `./results/MyStudy_YYYYMMDD_HHMMSS/`
 - Organizes DICOM files by series
-- Auto-detects T2-weighted sequences (SSH_TSE/T2)
-- Converts to NIfTI and runs SVR reconstruction
-- Saves intermediate files and final outputs
+- Auto-detects and prioritizes brain T2-weighted sequences (SSH_TSE/T2)
+- Limits series count to avoid memory issues (via `--max-series`)
+- Converts to NIfTI with preserved original series names
+- Runs SVR reconstruction with GPU or CPU
+- Saves intermediate files and final DICOM outputs
 
 **Output structure:**
 ```
 MyStudy_20251012_153756/
-├── in/dicom/           # Organized DICOM input
+├── in/dicom/           # Organized DICOM input by series
 ├── out/
-│   ├── tmp/            # Intermediate NIfTI files
+│   ├── tmp/            # Intermediate files (if --keep-temp)
+│   │   ├── input/      # NIfTI stacks with original names
 │   │   └── reconstructions/  # Per-iteration volumes
-│   └── dicom/          # Final DICOM output (if enabled)
+│   └── dicom/          # Final DICOM output series
 ```
 
 
@@ -182,11 +207,29 @@ MyStudy_20251012_153756/
 - Automatically generates brain masks to improve reconstruction quality
 - Checkpoint files included in `standalone_inlined/checkpoints/`
 
-### GPU Acceleration
+### Intelligent Series Selection
 
-- PyTorch + CUDA for fast reconstruction
-- Typical processing time: 5-15 minutes per case (depending on GPU and data size)
-- Supports multi-GPU systems (specify GPU with `--device` flag)
+The pipeline automatically prioritizes DICOM series for optimal reconstruction:
+
+**Priority order:**
+1. **Highest**: Series containing both "BRAIN" and T2-weighted terms (TSE/SSH_TSE/T2)
+2. **High**: Series containing "BRAIN" or "HEAD" keywords
+3. **Medium**: Series containing T2-weighted sequence terms
+4. **Low**: Other series
+
+**Features:**
+- Preserves original series names in NIfTI output (e.g., `BRAIN_AXIAL_SSh_TSE_esp5_6.nii.gz`)
+- Attempts to include different orientations (axial, coronal, sagittal)
+- Respects `--max-series` limit to avoid memory issues
+- Skips invalid or failed DICOM-to-NIfTI conversions
+
+### GPU/CPU Acceleration
+
+- **GPU mode**: PyTorch + CUDA for fast reconstruction (5-15 minutes per case)
+- **CPU mode**: Use `--device -1` for systems without GPU (30-60 minutes per case)
+- **Memory optimization**: Use `--batch-size-seg 4-8` to reduce memory usage
+- **Series limiting**: Use `--max-series N` to process only the best N series
+- Supports multi-GPU systems (specify GPU with `--device 0`, `--device 1`, etc.)
 
 ## Utilities and Tools
 
@@ -238,13 +281,29 @@ svr_gpu/
 ### CUDA/GPU Issues
 
 **Problem:** "CUDA out of memory"
-- **Solution:** Use a smaller batch size or reduce resolution, or use CPU-only mode
+- **Solution:** 
+  ```bash
+  # Reduce segmentation batch size
+  --batch-size-seg 4
+  
+  # Limit number of series processed
+  --max-series 5
+  
+  # Or use CPU-only mode
+  --device -1
+  ```
 
 **Problem:** "CUDA not available" despite having a GPU
 - **Solution:** Check driver compatibility and reinstall PyTorch with matching CUDA version:
   ```bash
   python -c "import torch; print(torch.version.cuda)"  # Check PyTorch CUDA version
   nvidia-smi  # Check driver CUDA version
+  ```
+
+**Problem:** Very slow processing
+- **Solution for CPU runs:** Use optimization flags:
+  ```bash
+  --device -1 --batch-size-seg 4 --no-augmentation-seg --max-series 5
   ```
 
 ### Import Errors
