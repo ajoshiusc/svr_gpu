@@ -5,7 +5,19 @@ import os
 from nibabel.processing import resample_from_to
 from nibabel.affines import apply_affine
 
-def generate_simulated_stacks(mri_path, out_dir, n_stacks=5, slices_per_stack=20, orientations=None, noise_std=0.01, max_disp=5.0):
+def generate_simulated_stacks(
+    mri_path,
+    out_dir,
+    n_stacks=5,
+    slices_per_stack=20,
+    orientations=None,
+    noise_std=0.01,
+    max_disp=5.0,
+    acq_order="interleaved-odd-even",
+    max_rot_deg=3.0,
+    max_trans_mm=1.0,
+    mb_factor: int = 1,
+):
     """
     Generate simulated stacks from a 3D MRI volume, with random in-plane displacement per slice,
     ensuring the output stack correctly aligns with the input volume.
@@ -33,6 +45,17 @@ def generate_simulated_stacks(mri_path, out_dir, n_stacks=5, slices_per_stack=20
         scaled_noise_std = noise_std * data_max
     else:
         scaled_noise_std = 0
+
+    def build_acq_order(nz: int, mode: str):
+        if mode == "sequential-asc":
+            return list(range(nz))
+        if mode == "sequential-desc":
+            return list(range(nz - 1, -1, -1))
+        if mode == "interleaved-even-odd":
+            # 0-based: even first
+            return list(range(0, nz, 2)) + list(range(1, nz, 2))
+        # default: interleaved-odd-even (1-based odd first => 0,2,4 in 0-based)
+        return list(range(0, nz, 2)) + list(range(1, nz, 2))
 
     for i in range(n_stacks):
         if orientations is not None:
@@ -103,19 +126,62 @@ def generate_simulated_stacks(mri_path, out_dir, n_stacks=5, slices_per_stack=20
         T = orig_center_world - apply_affine(stack_affine, stack_center_vox)
         stack_affine[:3, 3] = T
 
-        # Resample the original volume onto the new grid
-        stack_img = resample_from_to(img, (stack_shape, stack_affine), order=1, cval=vol.min())
-        stack = stack_img.get_fdata(dtype=np.float32)
+        # Simulate multi-slice acquisition: per-slice resampling with slice-wise motion
+        nx, ny, nz = stack_shape
+        stack = np.zeros(stack_shape, dtype=np.float32)
+        order = build_acq_order(nz, acq_order)
+        # Simultaneous Multi-Slice grouping: slices that are acquired at the same time share the same motion
+        mb = int(max(1, mb_factor))
+        if mb > nz:
+            mb = nz
+        # Build groups by modulo classes to space slices across the slab
+        groups = [[s for s in order if (s % mb) == r] for r in range(mb)] if mb > 1 else [order]
+
+        # Base 3x3 for slice sampling (without translation)
+        base_3x3 = stack_affine[:3, :3]
+        cx, cy = (nx - 1) / 2.0, (ny - 1) / 2.0
+
+        # Loop over SMS groups; apply shared motion within each group
+        for group in groups:
+            # Group-wise motion jitter
+            rx, ry, rz = np.deg2rad(np.random.uniform(-max_rot_deg, max_rot_deg, 3))
+            tx, ty, tz = np.random.uniform(-max_trans_mm, max_trans_mm, 3)
+            Rx = np.array([[1, 0, 0], [0, np.cos(rx), -np.sin(rx)], [0, np.sin(rx), np.cos(rx)]])
+            Ry = np.array([[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]])
+            Rz = np.array([[np.cos(rz), -np.sin(rz), 0], [np.sin(rz), np.cos(rz), 0], [0, 0, 1]])
+            R_delta = Rz @ Ry @ Rx
+
+            for s_acq in group:
+                # Nominal center of slice s in world space using the planned stack affine
+                world_center_nom = apply_affine(stack_affine, np.array([cx, cy, s_acq]))
+
+                # Compose with base orientation; keep orthonormal by construction
+                slice_R = (R_delta @ (base_3x3 @ np.linalg.inv(np.diag(stack_zooms))))
+                # Re-apply voxel scaling
+                slice_3x3 = slice_R @ np.diag(stack_zooms)
+
+                # Translation so that the slice center hits world_center_nom with added motion
+                t_delta = np.array([tx, ty, tz])
+                t_slice = world_center_nom + t_delta - (slice_3x3 @ np.array([cx, cy, 0.0]))
+
+                slice_affine = np.eye(4, dtype=np.float64)
+                slice_affine[:3, :3] = slice_3x3
+                slice_affine[:3, 3] = t_slice
+
+                # Resample just this slice (depth 1) then insert into stack at index s_acq
+                slice_img = resample_from_to(img, ((nx, ny, 1), slice_affine), order=1, cval=float(vol.min()))
+                slice_data = slice_img.get_fdata(dtype=np.float32)[:, :, 0]
+
+                # Optional additional in-plane displacement and noise
+                dx, dy = np.random.uniform(-max_disp, max_disp, 2)
+                slice_data = shift(slice_data, shift=(dx, dy), order=1, mode='nearest')
+                if scaled_noise_std > 0:
+                    slice_data += np.random.normal(0, scaled_noise_std, slice_data.shape).astype(np.float32)
+
+                stack[:, :, s_acq] = slice_data
 
         if np.mean(np.abs(stack)) < 1e-6:
             print(f"WARNING: Stack {i+1} is mostly empty. Check affine and FOV.")
-
-        # Add random in-plane displacement and noise per slice
-        for z in range(stack.shape[2]):
-            dx, dy = np.random.uniform(-max_disp, max_disp, 2)
-            stack[:, :, z] = shift(stack[:, :, z], shift=(dx, dy), order=1, mode='nearest')
-            if scaled_noise_std > 0:
-                stack[:, :, z] += np.random.normal(0, scaled_noise_std, stack[:, :, z].shape)
 
         # Save as NIfTI with correct affine
         out_img = nib.Nifti1Image(stack, stack_affine)
@@ -125,7 +191,23 @@ def generate_simulated_stacks(mri_path, out_dir, n_stacks=5, slices_per_stack=20
 
         out_path = os.path.join(out_dir, f"sim_stack_{i+1:02d}.nii.gz")
         nib.save(out_img, out_path)
+        
+        # Save SMS metadata as JSON sidecar
+        import json
+        json_path = out_path.replace('.nii.gz', '.json')
+        metadata = {
+            'mb_factor': mb_factor,
+            'acquisition_order': acq_order,
+            'max_rot_deg': max_rot_deg,
+            'max_trans_mm': max_trans_mm,
+            'noise_std': noise_std,
+            'max_disp': max_disp,
+        }
+        with open(json_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
         print(f"Saved stack {i+1} to {out_path} with shape {stack_shape}")
+
 
 if __name__ == "__main__":
     import argparse
@@ -136,6 +218,12 @@ if __name__ == "__main__":
     parser.add_argument("--slices-per-stack", type=int, default=20, help="Number of slices per stack")
     parser.add_argument("--noise-std", type=float, default=0.01, help="Std dev of Gaussian noise, as a fraction of 99th percentile intensity")
     parser.add_argument("--max-disp", type=float, default=5.0, help="Maximum random in-plane displacement per slice (pixels)")
+    parser.add_argument("--acq-order", type=str, default="interleaved-odd-even", choices=[
+        "sequential-asc", "sequential-desc", "interleaved-odd-even", "interleaved-even-odd"
+    ], help="Slice acquisition order")
+    parser.add_argument("--max-rot-deg", type=float, default=3.0, help="Max per-slice rotation jitter in degrees")
+    parser.add_argument("--max-trans-mm", type=float, default=1.0, help="Max per-slice translation jitter in mm")
+    parser.add_argument("--mb-factor", type=int, default=1, help="Simultaneous Multi-Slice factor (1 = no SMS)")
     args = parser.parse_args()
 
     generate_simulated_stacks(
@@ -143,5 +231,9 @@ if __name__ == "__main__":
         n_stacks=args.n_stacks,
         slices_per_stack=args.slices_per_stack,
         noise_std=args.noise_std,
-        max_disp=args.max_disp
+        max_disp=args.max_disp,
+        acq_order=args.acq_order,
+        max_rot_deg=args.max_rot_deg,
+        max_trans_mm=args.max_trans_mm,
+        mb_factor=args.mb_factor
     )
