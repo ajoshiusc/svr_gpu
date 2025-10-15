@@ -23,6 +23,7 @@ Key features:
 - CPU support with --device -1
 - Original series name preservation
 - Intelligent series prioritization for brain T2-weighted sequences
+- Optional manual filtering with --include-series-keyword
 """
 import sys
 from pathlib import Path
@@ -41,6 +42,15 @@ def main():
     p.add_argument("--device", default=None, help="Device id to pass to svr_dicom.py (optional)")
     p.add_argument("--batch-size-seg", type=int, default=None, help="Segmentation batch size to pass to svr_dicom.py")
     p.add_argument("--max-series", type=int, default=4, help="Maximum number of series to use (prioritized) (default: 4)")
+    p.add_argument(
+        "--include-series-keyword",
+        action="append",
+        default=None,
+        help=(
+            "Only include DICOM series whose SeriesDescription contains ALL of the provided keywords. "
+            "Case-insensitive. Can be specified multiple times."
+        ),
+    )
     args = p.parse_args()
 
     raw_input = Path(args.dicom_dir).expanduser().resolve()
@@ -112,6 +122,27 @@ def main():
             series_info.append({'path': series_dir, 'description': desc, 'num_files': len(dcm_files)})
         except Exception:
             continue
+
+    # Optional manual filtering by SeriesDescription keyword(s)
+    if args.include_series_keyword:
+        kws = [kw.lower() for kw in args.include_series_keyword if kw and kw.strip()]
+        original_series_info = list(series_info)
+        if kws:
+            before = len(series_info)
+            series_info = [
+                s for s in series_info
+                if all(kw in (s['description'] or '').lower() for kw in kws)
+            ]
+            print(f"Filtered series by ALL keywords {kws}: {len(series_info)} of {before} remain")
+        if not series_info:
+            print("ERROR: No series matched --include-series-keyword (ALL keywords must match).")
+            # Print a few available descriptions to help user
+            unique_desc = sorted({(s.get('description') or '').strip() for s in original_series_info if s.get('description')})
+            if unique_desc:
+                print("Available series descriptions (sample):")
+                for d in unique_desc[:10]:
+                    print(f"  - {d}")
+            sys.exit(1)
 
 
     # Highest priority: series with BOTH 'BRAIN' and ('TSE', 'SSH_TSE', 'SSHTSE', 'T2') in description

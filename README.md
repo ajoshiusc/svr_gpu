@@ -114,6 +114,7 @@ python run_svr_gpu.py DICOM_DIR OUTPUT_PARENT [OPTIONS]
 - `--no-augmentation-seg`: Disable segmentation augmentation for faster CPU processing
 - `--keep-temp`: Keep intermediate NIfTI files for inspection
 - `--study-name NAME`: Custom name for output directory
+- `--include-series-keyword KEY`: Only include series whose SeriesDescription contains ALL provided keywords (case-insensitive). Repeatable.
 
 **Example:**
 ```bash
@@ -138,6 +139,8 @@ python run_svr_gpu.py \
   --study-name SVR001 \
   --device 0 \
   --batch-size-seg 8 \
+  --include-series-keyword brain \
+  --include-series-keyword tse \
   --max-series 5 \
   --keep-temp
 
