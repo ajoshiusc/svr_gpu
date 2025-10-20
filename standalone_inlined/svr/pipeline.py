@@ -43,6 +43,11 @@ def _initial_mask(
 ) -> Tuple[Volume, bool]:
     dataset = PointDataset(slices)
     mask = dataset.mask
+    # If mask is all zero (e.g., simulated stacks or --segmentation none), force to all ones BEFORE resampling
+    if mask.mask is None or mask.mask.sum() == 0:
+        print("[SVR][DEBUG] Forcing mask to all ones before resampling (simulated or non-brain stack)")
+        # create Volume-like object with full mask
+        mask.mask = mask.image > -np.inf  # all True
     if sample_mask is not None:
         mask = load_mask(sample_mask, device)
     transformation = None
@@ -53,6 +58,10 @@ def _initial_mask(
         ).transformation
     mask = mask.resample(output_resolution, transformation)
     mask.mask = mask.image > 0
+    # If mask is all zero after resampling, force to all ones again
+    if mask.mask is None or mask.mask.sum() == 0:
+        print("[SVR][DEBUG] Forcing mask to all ones after resampling (simulated or non-brain stack)")
+        mask.mask = mask.image > -np.inf  # all True
     return mask, sample_mask is None
 
 

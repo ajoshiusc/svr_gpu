@@ -374,6 +374,8 @@ class Stack(_Data):
         thickness: Optional[float] = None,
         gap: Optional[float] = None,
         name: str = "",
+        mb_factor: int = 1,
+        acquisition_order: Optional[str] = None,
     ) -> None:
         if resolution_y is None:
             resolution_y = resolution_x
@@ -389,6 +391,8 @@ class Stack(_Data):
         self.thickness = thickness
         self.gap = gap
         self.name = name
+        self.mb_factor = max(1, int(mb_factor))  # SMS/multiband factor (1 = no SMS)
+        self.acquisition_order = acquisition_order  # e.g., 'interleaved-odd-even', 'sequential-asc'
 
     def check_data(self, value) -> None:
         super().check_data(value)
@@ -459,6 +463,8 @@ class Stack(_Data):
             self.thickness,
             self.gap,
             self.name,
+            self.mb_factor,
+            self.acquisition_order,
         )
 
     def get_mask_volume(self) -> Volume:
@@ -501,6 +507,8 @@ class Stack(_Data):
         d["thickness"] = float(self.thickness)
         d["gap"] = float(self.gap)
         d["name"] = self.name
+        d["mb_factor"] = self.mb_factor
+        d["acquisition_order"] = self.acquisition_order
         return d
 
     def clone(self, *, zero: bool = False, deep: bool = True) -> Stack:
@@ -526,6 +534,8 @@ class Stack(_Data):
             resolution_y=stack.resolution_y,
             thickness=stack.thickness,
             gap=stack.gap,
+            mb_factor=stack.mb_factor,
+            acquisition_order=stack.acquisition_order,
         )
 
     @staticmethod
@@ -658,6 +668,20 @@ def load_stack(
         slices_tensor, mask_tensor, resolutions, affine
     )
 
+    # Try to load SMS metadata from JSON sidecar
+    mb_factor = 1
+    acquisition_order = None
+    import json
+    json_path = str(path_vol).replace('.nii.gz', '.json').replace('.nii', '.json')
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, 'r') as f:
+                metadata = json.load(f)
+                mb_factor = metadata.get('mb_factor', 1)
+                acquisition_order = metadata.get('acquisition_order', None)
+        except Exception:
+            pass  # Fail silently if JSON can't be loaded
+
     return Stack(
         slices=slices_tensor.unsqueeze(1),
         mask=mask_tensor.unsqueeze(1),
@@ -667,6 +691,8 @@ def load_stack(
         thickness=resolutions[2],
         gap=resolutions[2],
         name=str(path_vol),
+        mb_factor=mb_factor,
+        acquisition_order=acquisition_order,
     )
 
 

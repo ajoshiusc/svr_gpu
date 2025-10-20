@@ -358,6 +358,42 @@ class VolumeToVolumeRegistration(Registration):
         return transform_out, loss
 
 
+def _build_sms_groups(nz: int, mb_factor: int, acq_order: Optional[str] = None) -> List[List[int]]:
+    """
+    Build SMS (Simultaneous Multi-Slice) groups.
+    
+    Args:
+        nz: Number of slices
+        mb_factor: Multiband factor (1 = no SMS)
+        acq_order: Acquisition order ('interleaved-odd-even', 'sequential-asc', etc.)
+    
+    Returns:
+        List of groups, where each group contains slice indices acquired simultaneously
+    """
+    if mb_factor <= 1:
+        # No SMS: each slice is its own group
+        return [[i] for i in range(nz)]
+    
+    # Build acquisition order
+    if acq_order == "sequential-asc":
+        order = list(range(nz))
+    elif acq_order == "sequential-desc":
+        order = list(range(nz - 1, -1, -1))
+    elif acq_order == "interleaved-even-odd":
+        order = list(range(0, nz, 2)) + list(range(1, nz, 2))
+    else:  # default: interleaved-odd-even
+        order = list(range(0, nz, 2)) + list(range(1, nz, 2))
+    
+    # Group by modulo class to space slices across the slab
+    mb = min(mb_factor, nz)
+    groups = [[s for s in order if (s % mb) == r] for r in range(mb)]
+    
+    # Filter out empty groups
+    groups = [g for g in groups if g]
+    
+    return groups
+
+
 class SliceToVolumeRegistration(Registration):
     trans_first = True  # due to slice_acquisition
 
@@ -450,6 +486,23 @@ class SliceToVolumeRegistration(Registration):
         )
 
         transform_out = RigidTransform(theta, trans_first=self.trans_first)
+        
+        # Apply SMS constraints: slices acquired simultaneously should share transformations
+        if hasattr(stack, 'mb_factor') and stack.mb_factor > 1:
+            nz = theta.shape[0]
+            sms_groups = _build_sms_groups(nz, stack.mb_factor, getattr(stack, 'acquisition_order', None))
+            # Average transformation within each SMS group
+            theta_sms = theta.clone()
+            print(f"[SVR][DEBUG] SMS registration: mb_factor={stack.mb_factor}, acquisition_order={getattr(stack, 'acquisition_order', None)}")
+            print(f"[SVR][DEBUG] SMS groups: {sms_groups}")
+            for group in sms_groups:
+                if len(group) > 1:
+                    group_theta = theta[group].mean(dim=0, keepdim=True)
+                    for idx in group:
+                        theta_sms[idx] = group_theta[0]
+                    print(f"[SVR][DEBUG] Averaged theta for group {group}: {group_theta[0].cpu().numpy()}")
+            transform_out = RigidTransform(theta_sms, trans_first=self.trans_first)
+        
         transform_out = volume_transform.compose(transform_out)
 
         return transform_out, loss

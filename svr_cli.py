@@ -244,6 +244,20 @@ def load_stack(
         slices_tensor, mask_tensor, resolutions, affine
     )
 
+    # Try to load SMS metadata from JSON sidecar
+    mb_factor = 1
+    acquisition_order = None
+    import json
+    json_path = str(path_vol).replace('.nii.gz', '.json').replace('.nii', '.json')
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, 'r') as f:
+                metadata = json.load(f)
+                mb_factor = metadata.get('mb_factor', 1)
+                acquisition_order = metadata.get('acquisition_order', None)
+        except Exception:
+            pass  # Fail silently if JSON can't be loaded
+
     return Stack(
         slices=slices_tensor.unsqueeze(1),
         mask=mask_tensor.unsqueeze(1),
@@ -253,6 +267,8 @@ def load_stack(
         thickness=resolutions[2],
         gap=resolutions[2],
         name=str(path_vol),
+        mb_factor=mb_factor,
+        acquisition_order=acquisition_order,
     )
 
 
@@ -494,7 +510,7 @@ def preprocess_inputs(args: Namespace):
     
     if "input_stacks" in input_dict and input_dict["input_stacks"]:
         # Segmentation (if enabled)
-        if args.segmentation:
+        if args.segmentation and str(args.segmentation).lower() != 'none':
             logger.info("Running segmentation")
             input_dict["input_stacks"] = _segment_stack(
                 args, input_dict["input_stacks"]

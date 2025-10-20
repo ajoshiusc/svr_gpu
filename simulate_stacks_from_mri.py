@@ -17,6 +17,8 @@ def generate_simulated_stacks(
     max_rot_deg=3.0,
     max_trans_mm=1.0,
     mb_factor: int = 1,
+    inplane_res: float = None,
+    slice_thickness: float = None,
 ):
     """
     Generate simulated stacks from a 3D MRI volume, with random in-plane displacement per slice,
@@ -76,15 +78,24 @@ def generate_simulated_stacks(
                 [0, 1, 0],
                 [-np.sin(theta), 0, np.cos(theta)]])
         else: # 'z'
-             rotmat = np.array([
+            rotmat = np.array([
                 [np.cos(theta), -np.sin(theta), 0],
                 [np.sin(theta), np.cos(theta), 0],
                 [0, 0, 1]
             ])
 
-        # Determine voxel sizes for the new stack
-        gap = (vol.shape[2] / slices_per_stack) * orig_zooms[2]
-        stack_zooms = np.array([orig_zooms[0], orig_zooms[1], gap])
+        # Determine voxel sizes for the new stack. Allow optional overrides for in-plane resolution and slice thickness.
+        if inplane_res is None:
+            res_x = orig_zooms[0]
+            res_y = orig_zooms[1]
+        else:
+            res_x = float(inplane_res)
+            res_y = float(inplane_res)
+        if slice_thickness is None:
+            gap = (vol.shape[2] / slices_per_stack) * orig_zooms[2]
+        else:
+            gap = float(slice_thickness)
+        stack_zooms = np.array([res_x, res_y, gap])
 
         # Decompose original affine to get its base rotation
         A = affine[:3, :3]
@@ -203,7 +214,7 @@ def generate_simulated_stacks(
             'noise_std': noise_std,
             'max_disp': max_disp,
         }
-        with open(json_path, 'w') as f:
+        with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2)
         
         print(f"Saved stack {i+1} to {out_path} with shape {stack_shape}")
@@ -224,6 +235,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-rot-deg", type=float, default=3.0, help="Max per-slice rotation jitter in degrees")
     parser.add_argument("--max-trans-mm", type=float, default=1.0, help="Max per-slice translation jitter in mm")
     parser.add_argument("--mb-factor", type=int, default=1, help="Simultaneous Multi-Slice factor (1 = no SMS)")
+    parser.add_argument("--inplane-res", type=float, default=None, help="In-plane resolution for simulated stacks (mm)")
+    parser.add_argument("--slice-thickness", type=float, default=None, help="Slice thickness (gap) for simulated stacks (mm)")
     args = parser.parse_args()
 
     generate_simulated_stacks(
@@ -236,4 +249,5 @@ if __name__ == "__main__":
         max_rot_deg=args.max_rot_deg,
         max_trans_mm=args.max_trans_mm,
         mb_factor=args.mb_factor
+        , inplane_res=args.inplane_res, slice_thickness=args.slice_thickness
     )
