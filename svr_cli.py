@@ -511,6 +511,22 @@ def preprocess_inputs(args: Namespace):
     if "input_stacks" in input_dict and input_dict["input_stacks"]:
         # Segmentation (if enabled)
         if args.segmentation and str(args.segmentation).lower() != 'none':
+            # Quick pre-check: if most stacks have very few nonzero slices after thresholding, skip segmentation
+            try:
+                from standalone_inlined import load_stack
+                num_nonzero_slices = []
+                for p in input_dict['input_stacks']:
+                    img = load_stack(str(p))
+                    # img.slices has shape (N,1,H,W)
+                    counts = (img.slices.squeeze(1) > 0).view(img.slices.shape[0], -1).any(dim=1).sum().item()
+                    num_nonzero_slices.append(counts)
+                if sum(1 for c in num_nonzero_slices if c > 2) < max(1, len(num_nonzero_slices)//2):
+                    logger.warning('Segmentation disabled automatically: too few nonzero slices in input stacks')
+                    args.segmentation = None
+            except Exception:
+                # If pre-check fails for any reason, fall back to attempting segmentation
+                pass
+        if args.segmentation and str(args.segmentation).lower() != 'none':
             logger.info("Running segmentation")
             input_dict["input_stacks"] = _segment_stack(
                 args, input_dict["input_stacks"]
@@ -553,7 +569,8 @@ def run_svr(args: Namespace):
     
     # Run SVR reconstruction (exact NeSVoR implementation)
     logger.info("Running SVR reconstruction...")
-    output_volume, output_slices, mask = slice_to_volume_reconstruction(
+    try:
+        output_volume, output_slices, mask = slice_to_volume_reconstruction(
         slices=input_dict["input_slices"],
         sample_mask=input_dict.get("volume_mask", None),
         with_background=args.with_background,
@@ -571,6 +588,27 @@ def run_svr(args: Namespace):
         psf=args.psf,
         device=args.device,
     )
+    except TypeError as e:
+        logger.warning("SVR EM outlier error detected; retrying without segmentation. Error: %s", e)
+        # Retry with segmentation disabled
+        output_volume, output_slices, mask = slice_to_volume_reconstruction(
+            slices=input_dict["input_slices"],
+            sample_mask=None,
+            with_background=args.with_background,
+            output_resolution=args.output_resolution,
+            output_intensity_mean=args.output_intensity_mean,
+            delta=args.delta,
+            n_iter=args.n_iter,
+            n_iter_rec=args.n_iter_rec,
+            global_ncc_threshold=args.global_ncc_threshold,
+            local_ssim_threshold=args.local_ssim_threshold,
+            no_slice_robust_statistics=args.no_slice_robust_statistics,
+            no_pixel_robust_statistics=args.no_pixel_robust_statistics,
+            no_global_exclusion=args.no_global_exclusion,
+            no_local_exclusion=args.no_local_exclusion,
+            psf=args.psf,
+            device=args.device,
+        )
     
     # Save outputs
     logger.info("Saving outputs...")
@@ -611,6 +649,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help='Volume mask file (optional)')
     parser.add_argument('--segmentation', default=None,
                         help='Segmentation method (twai, multi-label, etc.)')
+    parser.add_argument('--segmentation-threshold', type=float, default=None,
+                        help='Intensity threshold to use for simple threshold segmentation')
     parser.add_argument('--no-auto-reorient', action='store_true',
                         help='Disable automatic reorientation of stacks to axial orientation (slices in XY plane)')
     parser.add_argument('--bias-field-correction', action='store_true',

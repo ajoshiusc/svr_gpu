@@ -133,12 +133,63 @@ def slice_outlier_update(
     N_in = p.sum()
     N_out = x.numel() - N_in
 
+    # debug before computing means
+    if not torch.isfinite(sum_in) or not torch.isfinite(sum_out):
+        # Use print to guarantee visibility during debugging (temporary)
+        print(
+            "DEBUG slice_outlier_update early:",
+            sum_in.item() if isinstance(sum_in, torch.Tensor) else sum_in,
+            sum_out.item() if isinstance(sum_out, torch.Tensor) else sum_out,
+            N_in.item() if isinstance(N_in, torch.Tensor) else N_in,
+            N_out,
+            p.nonzero().size(0),
+            x.min().item(),
+            x.max().item(),
+            x.mean().item(),
+        )
+        logging.debug(
+            "slice_outlier_update early debug: sum_in=%s, sum_out=%s, N_in=%s, N_out=%s, p_nonzero=%s, x_stats=(min=%s,max=%s,mean=%s)",
+            sum_in.item() if isinstance(sum_in, torch.Tensor) else sum_in,
+            sum_out.item() if isinstance(sum_out, torch.Tensor) else sum_out,
+            N_in.item() if isinstance(N_in, torch.Tensor) else N_in,
+            N_out,
+            p.nonzero().size(0),
+            x.min().item(),
+            x.max().item(),
+            x.mean().item(),
+            )
     mu_in = sum_in / (N_in + 1e-10) if N_in > 0 else x.min()
     mu_out = sum_out / (N_out + 1e-10) if N_out > 0 else (x.max() + mu_in) / 2
     
     # Check for NaN/Inf
-    mu_in = mu_in if torch.isfinite(mu_in) else x.min()
+    # Ensure mu_in and mu_out are tensors for consistency
+    if not isinstance(mu_in, torch.Tensor):
+        mu_in = torch.tensor(mu_in, device=x.device, dtype=x.dtype)
+    if not isinstance(mu_out, torch.Tensor):
+        mu_out = torch.tensor(mu_out, device=x.device, dtype=x.dtype)
+    mu_in = mu_in if torch.isfinite(mu_in) else x.mean()
     mu_out = mu_out if torch.isfinite(mu_out) else x.max()
+    # Final guard: ensure mu_in and mu_out are finite
+    if not torch.isfinite(mu_in) or not torch.isfinite(mu_out):
+        logging.debug(
+            "slice_outlier_update debug: sum_in=%s, sum_out=%s, N_in=%s, N_out=%s, x_min=%s, x_max=%s, x_mean=%s",
+            sum_in.item() if isinstance(sum_in, torch.Tensor) else sum_in,
+            sum_out.item() if isinstance(sum_out, torch.Tensor) else sum_out,
+            N_in.item() if isinstance(N_in, torch.Tensor) else N_in,
+            N_out,
+            x.min().item(),
+            x.max().item(),
+            x.mean().item(),
+        )
+    if not torch.isfinite(mu_in):
+        mu_in = x.mean()
+    if not torch.isfinite(mu_out):
+        mu_out = x.max()
+    # Final guard: ensure mu_in and mu_out are finite
+    if not torch.isfinite(mu_in):
+        mu_in = x.mean()
+    if not torch.isfinite(mu_out):
+        mu_out = x.max()
 
     sum2_in = torch.dot((x - mu_in) ** 2, p)
     sum2_out = torch.dot((x - mu_out) ** 2, p)
@@ -147,17 +198,23 @@ def slice_outlier_update(
     if sum2_in > 0 and N_in > 0:
         sigma_in = torch.sqrt(sum2_in / (N_in + 1e-10))
     else:
-        sigma_in = 0.025
+        sigma_in = torch.tensor(0.025, device=x.device, dtype=x.dtype)
+    # Ensure sigma_in is a tensor before using torch.isfinite
+    if not isinstance(sigma_in, torch.Tensor):
+        sigma_in = torch.tensor(sigma_in, device=x.device, dtype=x.dtype)
     if sigma_in < 0.0001 or not torch.isfinite(sigma_in):
-        sigma_in = 0.0001
+        sigma_in = torch.tensor(0.0001, device=x.device, dtype=x.dtype)
 
     sigma_out: Union[float, torch.Tensor] = 0
     if sum2_out > 0 and N_out > 0:
         sigma_out = torch.sqrt(sum2_out / (N_out + 1e-10))
     else:
         sigma_out = (mu_out - mu_in) ** 2 / 4
+    # Ensure sigma_out is a tensor and finite
+    if not isinstance(sigma_out, torch.Tensor):
+        sigma_out = torch.tensor(sigma_out, device=x.device, dtype=x.dtype)
     if sigma_out < 0.0001 or not torch.isfinite(sigma_out):
-        sigma_out = 0.0001
+        sigma_out = torch.tensor(0.0001, device=x.device, dtype=x.dtype)
 
     if N_in <= 0 or mu_out <= mu_in:
         logging.warning("All slices are classified as outlier, reset")

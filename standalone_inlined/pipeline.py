@@ -9,6 +9,7 @@ from .image import Stack, Slice
 from .transform import RigidTransform
 from .assessment import assess as assess_stacks
 from .preprocessing.masking.brain_segmentation import brain_segmentation
+from .preprocessing.masking.thresholding import otsu_thresholding, thresholding
 from .preprocessing.bias_field import n4_bias_field_correction
 from .svort.inference import svort_predict
 
@@ -16,15 +17,37 @@ logger = logging.getLogger(__name__)
 
 
 def _segment_stack(args: Namespace, stacks: List[Stack]) -> List[Stack]:
-    """Apply MONAI FBS brain segmentation to each stack."""
-    stacks_out = brain_segmentation(
-        stacks,
-        args.device,
-        args.batch_size_seg,
-        not args.no_augmentation_seg,
-        args.dilation_radius_seg,
-        args.threshold_small_seg,
-    )
+    """Apply segmentation to each stack according to the selected method.
+
+    Supported methods:
+      - 'twai' (default): MONAI/DynUNet-based brain segmentation
+      - 'threshold': Simple intensity thresholding (uses --segmentation-threshold or --background-threshold)
+      - 'otsu': Otsu multi-level thresholding
+    """
+    seg_method = str(args.segmentation).lower() if args.segmentation is not None else "none"
+
+    if seg_method in ["none", "no", ""]:
+        return stacks
+
+    if seg_method in ("twai", "monaifbs"):
+        stacks_out = brain_segmentation(
+            stacks,
+            args.device,
+            args.batch_size_seg,
+            not args.no_augmentation_seg,
+            args.dilation_radius_seg,
+            args.threshold_small_seg,
+        )
+    elif seg_method in ("threshold", "simple"):
+        # Use segmentation threshold if provided, otherwise fall back to background threshold
+        seg_thresh = getattr(args, "segmentation_threshold", None)
+        if seg_thresh is None:
+            seg_thresh = args.background_threshold
+        stacks_out = thresholding(stacks, seg_thresh)
+    elif seg_method in ("otsu", "otsu_threshold"):
+        stacks_out = otsu_thresholding(stacks)
+    else:
+        raise ValueError(f"Unknown segmentation method '{args.segmentation}'")
 
     # Persist masks to SVR_TEMP_DIR if provided in environment
     temp_dir = os.environ.get("SVR_TEMP_DIR")
