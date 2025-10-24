@@ -136,170 +136,22 @@ def generate_simulated_stacks(
         # Convert to tensor with proper dimensions for MONAI
         # MONAI expects (batch, channel, spatial_dims) - so we need 5D tensor for 3D volume
         volume_tensor = torch.from_numpy(volume).unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, H, W, D)
-        
-        # Try using RandSmoothDeform with corrected parameters
-        try:
-            # Calculate appropriate rand_size based on volume dimensions
-            # rand_size should be smaller than spatial_size for meaningful deformations
-            rand_size = [
-                max(2, volume.shape[0] // 20),  # Even smaller control points
-                max(2, volume.shape[1] // 20), 
-                max(2, volume.shape[2] // 10)
-            ]
-            
-            # Apply MONAI's RandSmoothDeform with corrected parameters
-            smooth_transform = RandSmoothDeform(
-                spatial_size=volume.shape,  # (H, W, D)
-                rand_size=rand_size,        # Control point grid size
-                prob=1.0,
-                def_range=0.075*smooth_deform_range,
-                grid_mode="bilinear",       # Use bilinear interpolation
-                grid_padding_mode="border", # Border padding mode
-                grid_align_corners=False,   # Standard alignment
-            )
-            
-            # Apply the transformation
-            deformed_tensor = smooth_transform(volume_tensor[0])
-            return deformed_tensor.squeeze(0).squeeze(0).numpy()
-            
-        except Exception as e:
-            print(f"Warning: MONAI RandSmoothDeform failed ({e}), trying alternative approach...")
-            
-            # Fallback: Use a combination of MONAI transforms that work
-            try:
-                # Use RandAffine with small random transformations to simulate deformation
-                # But first, we need to handle the spatial_dims issue
-                # Let's try using a 2D approach by processing slice by slice
-                
-                # Apply small random affine transformations to simulate deformation
-                # Use smaller ranges to avoid the spatial_dims issue
-                transform = RandAffine(
-                    prob=1.0,
-                    translate_range=[(-smooth_deform_range, smooth_deform_range), 
-                                   (-smooth_deform_range, smooth_deform_range), 
-                                   (-smooth_deform_range*0.5, smooth_deform_range*0.5)],
-                    rotate_range=[(-0.02, 0.02), (-0.02, 0.02), (-0.02, 0.02)],
-                    scale_range=[(0.99, 1.01), (0.99, 1.01), (0.99, 1.01)],
-                    shear_range=[(-0.01, 0.01), (-0.01, 0.01), (-0.01, 0.01)],
-                    mode=InterpolateMode.BILINEAR,
-                    padding_mode="nearest"
-                )
-                
-                # Apply the transformation
-                deformed_tensor = transform(volume_tensor)
-                return deformed_tensor.squeeze(0).squeeze(0).numpy()
-                
-            except Exception as e2:
-                print(f"Warning: MONAI RandAffine also failed ({e2}), using custom deformation...")
-                
-                # Final fallback: Use a custom implementation that creates more realistic random deformations
-                deformed_vol = volume.copy().astype(np.float32)
-                
-                # Create deformation field if requested
-                if save_deformation:
-                    deformation_field = np.zeros((*volume.shape, 3), dtype=np.float32)
-                
-                # Create a more realistic random deformation field using multiple approaches
-                
-                # Approach 1: Random displacement field with spatial correlation
-                max_disp = smooth_deform_range
-                
-                # Create a sparse grid of control points with random displacements
-                grid_spacing = 20  # Control point spacing
-                control_points_x = np.arange(0, volume.shape[0], grid_spacing)
-                control_points_y = np.arange(0, volume.shape[1], grid_spacing)
-                control_points_z = np.arange(0, volume.shape[2], grid_spacing // 2)
-                
-                # Generate random displacements for control points
-                control_displacements = np.random.uniform(-max_disp, max_disp, 
-                                                        (len(control_points_x), len(control_points_y), len(control_points_z), 3))
-                
-                # Interpolate control point displacements to create smooth deformation field
-                for x in range(volume.shape[0]):
-                    for y in range(volume.shape[1]):
-                        for z in range(volume.shape[2]):
-                            # Find the surrounding control points
-                            x_idx = np.searchsorted(control_points_x, x)
-                            y_idx = np.searchsorted(control_points_y, y)
-                            z_idx = np.searchsorted(control_points_z, z)
-                            
-                            # Ensure we have valid indices
-                            x_idx = max(0, min(x_idx - 1, len(control_points_x) - 2))
-                            y_idx = max(0, min(y_idx - 1, len(control_points_y) - 2))
-                            z_idx = max(0, min(z_idx - 1, len(control_points_z) - 2))
-                            
-                            # Calculate interpolation weights
-                            if x_idx < len(control_points_x) - 1:
-                                wx = (x - control_points_x[x_idx]) / (control_points_x[x_idx + 1] - control_points_x[x_idx])
-                                wx = max(0, min(1, wx))
-                            else:
-                                wx = 0
-                                
-                            if y_idx < len(control_points_y) - 1:
-                                wy = (y - control_points_y[y_idx]) / (control_points_y[y_idx + 1] - control_points_y[y_idx])
-                                wy = max(0, min(1, wy))
-                            else:
-                                wy = 0
-                                
-                            if z_idx < len(control_points_z) - 1:
-                                wz = (z - control_points_z[z_idx]) / (control_points_z[z_idx + 1] - control_points_z[z_idx])
-                                wz = max(0, min(1, wz))
-                            else:
-                                wz = 0
-                            
-                            # Trilinear interpolation of displacements
-                            # Get the 8 corner displacements
-                            d000 = control_displacements[x_idx, y_idx, z_idx]
-                            d001 = control_displacements[x_idx, y_idx, z_idx + 1] if z_idx + 1 < len(control_points_z) else d000
-                            d010 = control_displacements[x_idx, y_idx + 1, z_idx] if y_idx + 1 < len(control_points_y) else d000
-                            d011 = control_displacements[x_idx, y_idx + 1, z_idx + 1] if (y_idx + 1 < len(control_points_y) and z_idx + 1 < len(control_points_z)) else d000
-                            d100 = control_displacements[x_idx + 1, y_idx, z_idx] if x_idx + 1 < len(control_points_x) else d000
-                            d101 = control_displacements[x_idx + 1, y_idx, z_idx + 1] if (x_idx + 1 < len(control_points_x) and z_idx + 1 < len(control_points_z)) else d000
-                            d110 = control_displacements[x_idx + 1, y_idx + 1, z_idx] if (x_idx + 1 < len(control_points_x) and y_idx + 1 < len(control_points_y)) else d000
-                            d111 = control_displacements[x_idx + 1, y_idx + 1, z_idx + 1] if (x_idx + 1 < len(control_points_x) and y_idx + 1 < len(control_points_y) and z_idx + 1 < len(control_points_z)) else d000
-                            
-                            # Trilinear interpolation
-                            c00 = d000 * (1 - wz) + d001 * wz
-                            c01 = d010 * (1 - wz) + d011 * wz
-                            c10 = d100 * (1 - wz) + d101 * wz
-                            c11 = d110 * (1 - wz) + d111 * wz
-                            
-                            c0 = c00 * (1 - wy) + c01 * wy
-                            c1 = c10 * (1 - wy) + c11 * wy
-                            
-                            final_displacement = c0 * (1 - wx) + c1 * wx
-                            
-                            # Store deformation field
-                            if save_deformation:
-                                deformation_field[x, y, z, 0] = final_displacement[0]
-                                deformation_field[x, y, z, 1] = final_displacement[1]
-                                deformation_field[x, y, z, 2] = final_displacement[2]
-                            
-                            # Apply displacement to volume
-                            new_x = x + final_displacement[0]
-                            new_y = y + final_displacement[1]
-                            new_z = z + final_displacement[2]
-                            
-                            # Bounds checking
-                            new_x = max(0, min(volume.shape[0] - 1, new_x))
-                            new_y = max(0, min(volume.shape[1] - 1, new_y))
-                            new_z = max(0, min(volume.shape[2] - 1, new_z))
-                            
-                            # Simple nearest neighbor interpolation for speed
-                            if (0 <= int(new_x) < volume.shape[0] and 
-                                0 <= int(new_y) < volume.shape[1] and 
-                                0 <= int(new_z) < volume.shape[2]):
-                                deformed_vol[x, y, z] = volume[int(new_x), int(new_y), int(new_z)]
-                
-                # Add some additional random noise to make it more realistic
-                if save_deformation:
-                    noise_scale = max_disp * 0.1
-                    noise = np.random.normal(0, noise_scale, deformation_field.shape).astype(np.float32)
-                    deformation_field += noise
-                
-                if save_deformation:
-                    return deformed_vol, deformation_field
-                return deformed_vol
+
+        # Apply MONAI's Rand3DElastic
+        elastic_transform = Rand3DElastic(
+            sigma_range=[6,8],#elastic_sigma_range,
+            magnitude_range=[100,300],#elastic_magnitude_range,
+            prob=1.0,
+            mode=InterpolateMode.BILINEAR,
+            padding_mode="border"
+        )
+        deformed_tensor = elastic_transform(volume_tensor[0])
+        deformed_vol = deformed_tensor.squeeze(0).numpy()
+        # Rand3DElastic does not return the deformation field, so we cannot save it directly
+        if save_deformation:
+            deformation_field = None
+            return deformed_vol, deformation_field
+        return deformed_vol
 
     for i in range(n_stacks):
         # Apply nonlinear deformation to simulate underlying MRI changes
