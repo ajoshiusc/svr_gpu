@@ -70,13 +70,18 @@ source .venv/bin/activate
 python svr_cli.py \
   --input-stacks axial.nii.gz coronal.nii.gz sagittal.nii.gz \
   --output reconstructed.nii.gz \
-  --segmentation twai
+  --segmentation twai  # Use 'none' to disable segmentation
 
 # Advanced: disable auto-reorientation if stacks are already aligned
 python svr_cli.py \
   --input-stacks stack1.nii.gz stack2.nii.gz \
   --output result.nii.gz \
   --segmentation twai \
+  # Run without segmentation
+  python svr_cli.py \
+    --input-stacks stack1.nii.gz stack2.nii.gz \
+    --output result.nii.gz \
+    --segmentation none
   --no-auto-reorient
 ```
 

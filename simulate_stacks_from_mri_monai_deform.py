@@ -163,30 +163,30 @@ def generate_simulated_stacks(
             deformed_vol = result
             deformation_field = None
         
-        # Determine orientation
-        if orientations is not None:
-            angle, axis = orientations[i % len(orientations)]
-        else:
-            axis = np.random.choice(['x', 'y'])
-            angle = np.random.uniform(15, 345)
+        ## Determine orientation
+        #if orientations is not None:
+        #    angle, axis = orientations[i % len(orientations)]
+        #else:
+        #    axis = np.random.choice(['x', 'y'])
+        #    angle = np.random.uniform(15, 345)
 
-        theta = np.deg2rad(angle)
-        if axis == 'x':
-            rotmat = np.array([
-                [1, 0, 0],
-                [0, np.cos(theta), -np.sin(theta)],
-                [0, np.sin(theta), np.cos(theta)]])
-        elif axis == 'y':
-            rotmat = np.array([
-                [np.cos(theta), 0, np.sin(theta)],
-                [0, 1, 0],
-                [-np.sin(theta), 0, np.cos(theta)]])
-        else:  # 'z'
-            rotmat = np.array([
-                [np.cos(theta), -np.sin(theta), 0],
-                [np.sin(theta), np.cos(theta), 0],
-                [0, 0, 1]
-            ])
+        #theta = np.deg2rad(angle)
+        #if axis == 'x':
+        #    rotmat = np.array([
+        #        [1, 0, 0],
+        #        [0, np.cos(theta), -np.sin(theta)],
+        #        [0, np.sin(theta), np.cos(theta)]])
+        #elif axis == 'y':
+        #    rotmat = np.array([
+        #        [np.cos(theta), 0, np.sin(theta)],
+        #        [0, 1, 0],
+        #        [-np.sin(theta), 0, np.cos(theta)]])
+        #else:  # 'z'
+        #    rotmat = np.array([
+        #        [np.cos(theta), -np.sin(theta), 0],
+        #        [np.sin(theta), np.cos(theta), 0],
+        #        [0, 0, 1]
+        #    ])
 
         # Determine voxel sizes
         if inplane_res is None:
@@ -203,16 +203,16 @@ def generate_simulated_stacks(
 
         # Decompose original affine to get base rotation
         A = affine[:3, :3]
-        S_pix = np.diag(orig_zooms)
-        U, _, Vt = np.linalg.svd(A @ np.linalg.inv(S_pix))
-        R0 = U @ Vt
-        if np.linalg.det(R0) < 0:
-            U[:, -1] *= -1
-            R0 = U @ Vt
+        #S_pix = np.diag(orig_zooms)
+        #U, _, Vt = np.linalg.svd(A @ np.linalg.inv(S_pix))
+        #R0 = U @ Vt
+        #if np.linalg.det(R0) < 0:
+        #    U[:, -1] *= -1
+        #    R0 = U @ Vt
 
         # Create new stack's rotation matrix
-        R_stack = R0 @ rotmat
-        stack_affine_3x3 = R_stack @ np.diag(stack_zooms)
+        #R_stack = R0 @ rotmat
+        stack_affine_3x3 = A #R_stack @ np.diag(stack_zooms)
 
         # Calculate output shape to contain entire rotated volume
         corners_vox = np.array(np.meshgrid([0, vol.shape[0]], [0, vol.shape[1]], [0, vol.shape[2]])).T.reshape(-1, 3)

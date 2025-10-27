@@ -115,7 +115,7 @@ def generate_simulated_stacks(
         if orientations is not None:
             angle, axis = orientations[i % len(orientations)]
         else:
-            axis = np.random.choice(['x', 'y'])
+            axis = np.random.choice(['x', 'y', 'z'])
             angle = np.random.uniform(15, 345)
 
         theta = np.deg2rad(angle)

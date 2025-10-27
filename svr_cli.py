@@ -648,7 +648,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--volume-mask', default=None,
                         help='Volume mask file (optional)')
     parser.add_argument('--segmentation', default='twai',
-                        help='Segmentation method (twai, otsu, threshold, none)')
+                        help='Segmentation method (twai, otsu, threshold, none). Use "none" to disable segmentation.')
     parser.add_argument('--segmentation-threshold', type=float, default=None,
                         help='Intensity threshold to use for simple threshold segmentation')
     parser.add_argument('--no-auto-reorient', action='store_true',
