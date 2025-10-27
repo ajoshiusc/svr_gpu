@@ -1,5 +1,5 @@
 # Test script to generate simulated stacks using MONAI rigid transforms
-from simulate_stacks_from_mri_monai_deform import generate_simulated_stacks
+from simulate_stacks import generate_simulated_stacks
 
 if __name__ == "__main__":
 	generate_simulated_stacks(
@@ -15,6 +15,7 @@ if __name__ == "__main__":
 		mb_factor=1,
 		inplane_res=2,
 		slice_thickness=9,
-		orientations=[(0, 'x'), (90, 'y'), (180, 'x'), (270, 'y'), (45, 'z'), (135, 'z')]
+		orientations=[(0, 'x'), (90, 'y'), (180, 'x'), (270, 'y'), (45, 'z'), (135, 'z')],
+		enable_nonlinear=True
 	)
 

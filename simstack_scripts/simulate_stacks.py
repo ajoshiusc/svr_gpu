@@ -32,8 +32,8 @@ def generate_simulated_stacks(
     inplane_res: Optional[float] = None,
     slice_thickness: Optional[float] = None,
     # Nonlinear transformation parameters
-    enable_nonlinear: bool = True,
-    nonlinear_prob: float = 0.7,
+    enable_nonlinear: bool = False,
+    nonlinear_prob: float = 1.0,
     elastic_sigma_range: Tuple[float, float] = (3.0, 5.0),
     elastic_magnitude_range: Tuple[float, float] = (0.0, 2.0),
     smooth_deform_prob: float = 0.3,
@@ -164,29 +164,29 @@ def generate_simulated_stacks(
             deformation_field = None
         
         ## Determine orientation
-        #if orientations is not None:
-        #    angle, axis = orientations[i % len(orientations)]
-        #else:
-        #    axis = np.random.choice(['x', 'y'])
-        #    angle = np.random.uniform(15, 345)
+        if orientations is not None:
+            angle, axis = orientations[i % len(orientations)]
+        else:
+            axis = np.random.choice(['x', 'y', 'z'])
+            angle = np.random.uniform(15, 345)
 
-        #theta = np.deg2rad(angle)
-        #if axis == 'x':
-        #    rotmat = np.array([
-        #        [1, 0, 0],
-        #        [0, np.cos(theta), -np.sin(theta)],
-        #        [0, np.sin(theta), np.cos(theta)]])
-        #elif axis == 'y':
-        #    rotmat = np.array([
-        #        [np.cos(theta), 0, np.sin(theta)],
-        #        [0, 1, 0],
-        #        [-np.sin(theta), 0, np.cos(theta)]])
-        #else:  # 'z'
-        #    rotmat = np.array([
-        #        [np.cos(theta), -np.sin(theta), 0],
-        #        [np.sin(theta), np.cos(theta), 0],
-        #        [0, 0, 1]
-        #    ])
+        theta = np.deg2rad(angle)
+        if axis == 'x':
+            rotmat = np.array([
+                [1, 0, 0],
+                [0, np.cos(theta), -np.sin(theta)],
+                [0, np.sin(theta), np.cos(theta)]])
+        elif axis == 'y':
+            rotmat = np.array([
+                [np.cos(theta), 0, np.sin(theta)],
+                [0, 1, 0],
+                [-np.sin(theta), 0, np.cos(theta)]])
+        else:  # 'z'
+            rotmat = np.array([
+                [np.cos(theta), -np.sin(theta), 0],
+                [np.sin(theta), np.cos(theta), 0],
+                [0, 0, 1]
+            ])
 
         # Determine voxel sizes
         if inplane_res is None:
@@ -203,16 +203,16 @@ def generate_simulated_stacks(
 
         # Decompose original affine to get base rotation
         A = affine[:3, :3]
-        #S_pix = np.diag(orig_zooms)
-        #U, _, Vt = np.linalg.svd(A @ np.linalg.inv(S_pix))
-        #R0 = U @ Vt
-        #if np.linalg.det(R0) < 0:
-        #    U[:, -1] *= -1
-        #    R0 = U @ Vt
+        S_pix = np.diag(orig_zooms)
+        U, _, Vt = np.linalg.svd(A @ np.linalg.inv(S_pix))
+        R0 = U @ Vt
+        if np.linalg.det(R0) < 0:
+            U[:, -1] *= -1
+            R0 = U @ Vt
 
         # Create new stack's rotation matrix
-        #R_stack = R0 @ rotmat
-        stack_affine_3x3 = A #R_stack @ np.diag(stack_zooms)
+        R_stack = R0 @ rotmat
+        stack_affine_3x3 = R_stack @ np.diag(stack_zooms)
 
         # Calculate output shape to contain entire rotated volume
         corners_vox = np.array(np.meshgrid([0, vol.shape[0]], [0, vol.shape[1]], [0, vol.shape[2]])).T.reshape(-1, 3)
@@ -399,4 +399,3 @@ if __name__ == "__main__":
         smooth_deform_prob=args.smooth_deform_prob,
         smooth_deform_range=args.smooth_deform_range
     )
-    

@@ -1,5 +1,5 @@
 # Test script to generate simulated stacks using MONAI rigid transforms
-from simulate_stacks_from_mri_monai_deform import generate_simulated_stacks
+from simulate_stacks import generate_simulated_stacks
 
 if __name__ == "__main__":
     generate_simulated_stacks(
