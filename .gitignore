@@ -193,3 +193,5 @@ organized_svr002/
 output_svr002_dicom/
 */*.json
 main_test_3delasticdeformation2.py
+test_data/*
+
