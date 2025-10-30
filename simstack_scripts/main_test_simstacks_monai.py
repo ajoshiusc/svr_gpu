@@ -1,5 +1,5 @@
 # Test script to generate simulated stacks using MONAI rigid transforms
-from simulate_stacks_from_mri_monai import generate_simulated_stacks
+from simulate_stacks import generate_simulated_stacks
 
 if __name__ == "__main__":
     generate_simulated_stacks(
@@ -17,3 +17,6 @@ if __name__ == "__main__":
         slice_thickness=None,
         orientations=[(0, 'x'), (90, 'y'), (180, 'x'), (270, 'y'), (45, 'z'), (135, 'z')]
     )
+
+    print("Simulated stacks generated successfully.")
+    

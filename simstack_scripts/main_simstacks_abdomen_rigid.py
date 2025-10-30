@@ -13,7 +13,7 @@ if __name__ == "__main__":
 		max_rot_deg=3.0,
 		max_trans_mm=1.0,
 		mb_factor=1,
-		inplane_res=2,
+		inplane_res=1.7,
 		slice_thickness=9,
         orientations=[(0, 'x'), (90, 'y'), (180, 'x'), (270, 'y'), (45, 'z'), (135, 'z')],
 		enable_nonlinear=False
