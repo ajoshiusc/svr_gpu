@@ -557,10 +557,31 @@ def run_svort(
         logging.warning("Failed to persist SVoRT outputs: %s", e)
 
     slices = []
-    for stack in dataset:
+    for stack_idx, stack in enumerate(dataset):
         idx_nonempty = stack.mask.flatten(1).any(1)
         stack.slices /= torch.quantile(stack.slices[stack.mask], 0.99)  # normalize
-        slices.extend(stack[idx_nonempty])
+        extracted_slices = stack[idx_nonempty]
+        
+        # Attach SMS metadata to each slice for later reconstruction
+        mb_factor = getattr(stack, 'mb_factor', 1)
+        acquisition_order = getattr(stack, 'acquisition_order', None)
+        
+        # Handle both single slice and list of slices
+        if not isinstance(extracted_slices, list):
+            extracted_slices = [extracted_slices]
+        
+        for s in extracted_slices:
+            s._source_stack_idx = stack_idx
+            s._source_mb_factor = mb_factor
+            s._source_acquisition_order = acquisition_order
+        
+        slices.extend(extracted_slices)
+    
+    print(f"[SVR][DEBUG] Extracted {len(slices)} slices from {len(dataset)} stacks")
+    if len(slices) > 0:
+        print(f"[SVR][DEBUG] First slice has _source_stack_idx: {hasattr(slices[0], '_source_stack_idx')}, "
+              f"value: {getattr(slices[0], '_source_stack_idx', 'N/A')}, "
+              f"mb_factor: {getattr(slices[0], '_source_mb_factor', 'N/A')}")
 
     return slices
 

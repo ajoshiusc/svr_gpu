@@ -561,6 +561,11 @@ class Stack(_Data):
         data = []
         mask = []
         transformation = []
+        # Collect SMS metadata from all input stacks
+        mb_factors = []
+        acquisition_orders = []
+        slice_counts = []
+        
         for i, inp in enumerate(inputs):
             if isinstance(inp, Slice):
                 data.append(inp.image[None])
@@ -575,6 +580,10 @@ class Stack(_Data):
                 data.append(inp.slices)
                 mask.append(inp.mask)
                 transformation.append(inp.transformation)
+                # Collect SMS metadata
+                mb_factors.append(getattr(inp, 'mb_factor', 1))
+                acquisition_orders.append(getattr(inp, 'acquisition_order', None))
+                slice_counts.append(inp.slices.shape[0])
                 if i == 0:
                     resolution_x = inp.resolution_x
                     resolution_y = inp.resolution_y
@@ -583,7 +592,8 @@ class Stack(_Data):
             else:
                 raise TypeError("unkonwn type!")
 
-        return Stack(
+        # Create the concatenated stack
+        result = Stack(
             slices=torch.cat(data, 0),
             mask=torch.cat(mask, 0),
             transformation=RigidTransform.cat(transformation),
@@ -592,6 +602,13 @@ class Stack(_Data):
             thickness=thickness,
             gap=gap,
         )
+        
+        # Attach SMS metadata as a list: [(mb_factor, acquisition_order, slice_count), ...]
+        # This allows tracking SMS groups across concatenated stacks
+        if mb_factors and any(mb > 1 for mb in mb_factors):
+            result.sms_metadata = [(mb, ao, sc) for mb, ao, sc in zip(mb_factors, acquisition_orders, slice_counts)]
+        
+        return result
 
     def init_stack_transform(self) -> RigidTransform:
         return init_stack_transform(len(self), self.gap, self.device)

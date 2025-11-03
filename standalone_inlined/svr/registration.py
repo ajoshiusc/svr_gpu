@@ -481,6 +481,12 @@ class SliceToVolumeRegistration(Registration):
         self.volume_mask = volume.mask[None, None] if use_mask else None
         self.slices_mask = stack.mask if use_mask else None
 
+        # Debug: Check SMS metadata
+        print(f"[SVR][DEBUG] Registration called. Stack has sms_metadata: {hasattr(stack, 'sms_metadata')}")
+        if hasattr(stack, 'sms_metadata'):
+            print(f"[SVR][DEBUG] sms_metadata value: {stack.sms_metadata}")
+        print(f"[SVR][DEBUG] Stack has mb_factor: {hasattr(stack, 'mb_factor')}, value: {getattr(stack, 'mb_factor', None)}")
+
         theta, loss = self.forward_tensor(
             theta, volume.image[None, None], stack.slices, params
         )
@@ -488,10 +494,30 @@ class SliceToVolumeRegistration(Registration):
         transform_out = RigidTransform(theta, trans_first=self.trans_first)
         
         # Apply SMS constraints: slices acquired simultaneously should share transformations
-        if hasattr(stack, 'mb_factor') and stack.mb_factor > 1:
+        # Check for SMS metadata (either single stack or concatenated multi-stack)
+        if hasattr(stack, 'sms_metadata') and stack.sms_metadata is not None:
+            # Multi-stack concatenated case: sms_metadata is list of (mb_factor, acq_order, slice_count)
+            print(f"[SVR][DEBUG] SMS registration: concatenated stacks with metadata {stack.sms_metadata}")
+            theta_sms = theta.clone()
+            slice_offset = 0
+            for mb_factor, acq_order, slice_count in stack.sms_metadata:
+                if mb_factor > 1:
+                    sms_groups = _build_sms_groups(slice_count, mb_factor, acq_order)
+                    print(f"[SVR][DEBUG] Stack slice range [{slice_offset}:{slice_offset+slice_count}], SMS groups: {sms_groups}")
+                    for group in sms_groups:
+                        if len(group) > 1:
+                            # Adjust group indices to global slice indices
+                            global_group = [slice_offset + idx for idx in group]
+                            group_theta = theta[global_group].mean(dim=0, keepdim=True)
+                            for idx in global_group:
+                                theta_sms[idx] = group_theta[0]
+                            print(f"[SVR][DEBUG] Averaged theta for global group {global_group}")
+                slice_offset += slice_count
+            transform_out = RigidTransform(theta_sms, trans_first=self.trans_first)
+        elif hasattr(stack, 'mb_factor') and stack.mb_factor > 1:
+            # Single stack case: mb_factor and acquisition_order directly on stack
             nz = theta.shape[0]
             sms_groups = _build_sms_groups(nz, stack.mb_factor, getattr(stack, 'acquisition_order', None))
-            # Average transformation within each SMS group
             theta_sms = theta.clone()
             print(f"[SVR][DEBUG] SMS registration: mb_factor={stack.mb_factor}, acquisition_order={getattr(stack, 'acquisition_order', None)}")
             print(f"[SVR][DEBUG] SMS groups: {sms_groups}")
@@ -500,7 +526,7 @@ class SliceToVolumeRegistration(Registration):
                     group_theta = theta[group].mean(dim=0, keepdim=True)
                     for idx in group:
                         theta_sms[idx] = group_theta[0]
-                    print(f"[SVR][DEBUG] Averaged theta for group {group}: {group_theta[0].cpu().numpy()}")
+                    print(f"[SVR][DEBUG] Averaged theta for group {group}")
             transform_out = RigidTransform(theta_sms, trans_first=self.trans_first)
         
         transform_out = volume_transform.compose(transform_out)

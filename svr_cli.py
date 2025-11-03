@@ -77,6 +77,14 @@ def preprocess_stacks_orientation(input_stacks: List[str], temp_dir: str) -> Lis
         # Reorient the stack using imported function
         reorient_to_axial(input_path, output_path, verbose=False)
         reoriented_paths.append(output_path)
+        
+        # Copy JSON sidecar file if it exists (contains SMS metadata)
+        input_json = input_path.replace('.nii.gz', '.json').replace('.nii', '.json')
+        if os.path.exists(input_json):
+            import shutil
+            output_json = output_path.replace('.nii.gz', '.json').replace('.nii', '.json')
+            shutil.copy2(input_json, output_json)
+            logger.debug(f"  Copied SMS metadata from {input_json} to {output_json}")
     
     logger.info(f"  Reoriented {len(reoriented_paths)} stacks")
     return reoriented_paths

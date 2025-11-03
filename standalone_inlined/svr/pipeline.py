@@ -68,15 +68,29 @@ def _initial_mask(
 def _check_resolution_and_shape(slices: List[Slice]) -> List[Slice]:
     res_inplane = []
     thicknesses = []
+    # Save SMS metadata before resampling
+    sms_metadata_per_slice = []
     for s in slices:
         res_inplane.append(float(s.resolution_x))
         res_inplane.append(float(s.resolution_y))
         thicknesses.append(float(s.resolution_z))
+        # Save SMS metadata
+        sms_metadata_per_slice.append({
+            '_source_stack_idx': getattr(s, '_source_stack_idx', None),
+            '_source_mb_factor': getattr(s, '_source_mb_factor', None),
+            '_source_acquisition_order': getattr(s, '_source_acquisition_order', None),
+        })
 
     res_s = min(res_inplane)
     s_thick = np.mean(thicknesses).item()
     slices = [s.resample((res_s, res_s, s_thick)) for s in slices]
     slices = Stack.pad_stacks(slices)
+    
+    # Restore SMS metadata after resampling and padding
+    for s, metadata in zip(slices, sms_metadata_per_slice):
+        for key, value in metadata.items():
+            if value is not None:
+                setattr(s, key, value)
 
     if max(thicknesses) - min(thicknesses) > 0.001:
         logging.warning("The input data have different thicknesses!")
@@ -122,7 +136,50 @@ def slice_to_volume_reconstruction(
     slices = _check_resolution_and_shape(slices)
     if n_iter_rec is None:
         n_iter_rec = [7, 7, 21]
+    
+    # Debug: Check if slices have SMS metadata attached
+    print(f"[SVR][DEBUG] Processing {len(slices)} slices")
+    for i, s in enumerate(slices[:3]):  # Check first 3 slices
+        print(f"[SVR][DEBUG] Slice {i}: has _source_stack_idx={hasattr(s, '_source_stack_idx')}, "
+              f"_source_mb_factor={getattr(s, '_source_mb_factor', 'N/A')}, "
+              f"_source_acquisition_order={getattr(s, '_source_acquisition_order', 'N/A')}")
+    
     stack = Stack.cat(slices)
+    
+    # Extract SMS metadata from input slices if they came from SMS stacks
+    # Each slice may have stack_metadata attached during registration
+    mb_factors = []
+    acquisition_orders = []
+    slice_counts_per_stack = []
+    current_stack_idx = None
+    current_count = 0
+    
+    for s in slices:
+        stack_idx = getattr(s, '_source_stack_idx', None)
+        if stack_idx != current_stack_idx and current_stack_idx is not None:
+            # New stack encountered, save previous stack info
+            if current_count > 0:
+                slice_counts_per_stack.append(current_count)
+                current_count = 0
+        current_stack_idx = stack_idx
+        current_count += 1
+        
+        # Collect SMS metadata from first slice of each stack
+        if current_count == 1 and stack_idx is not None:
+            mb_factors.append(getattr(s, '_source_mb_factor', 1))
+            acquisition_orders.append(getattr(s, '_source_acquisition_order', None))
+    
+    # Don't forget the last stack
+    if current_count > 0:
+        slice_counts_per_stack.append(current_count)
+    
+    print(f"[SVR][DEBUG] Extracted SMS metadata: mb_factors={mb_factors}, slice_counts={slice_counts_per_stack}")
+    
+    # Attach SMS metadata to the concatenated stack if any SMS stacks were found
+    if mb_factors and any(mb > 1 for mb in mb_factors) and len(slice_counts_per_stack) == len(mb_factors):
+        stack.sms_metadata = [(mb, ao, sc) for mb, ao, sc in zip(mb_factors, acquisition_orders, slice_counts_per_stack)]
+        print(f"[SVR][DEBUG] Attached SMS metadata to stack: {stack.sms_metadata}")
+    
     slices_mask_backup = stack.mask.clone()
 
     # init volume
@@ -254,6 +311,19 @@ def slice_to_volume_reconstruction(
                 logging.debug('Failed to save inner iteration reconstruction', exc_info=True)
 
     # reconstruction finished
+    # Save final transforms after SVR completes
+    try:
+        import numpy as np
+        svr_tmp = os.environ.get('SVR_TEMP_DIR') or _find_latest_svr_tmp() or os.path.join(os.getcwd(), 'out', 'tmp')
+        svr_dir = os.path.join(svr_tmp, 'svr')
+        os.makedirs(svr_dir, exist_ok=True)
+        # Save final stack transformation after SVR
+        mat = stack.transformation.matrix().detach().cpu().numpy()
+        np.save(os.path.join(svr_dir, 'transforms_svr_final.npy'), mat)
+        logging.info("Saved final SVR transforms to %s", os.path.join(svr_dir, 'transforms_svr_final.npy'))
+    except Exception as e:
+        logging.warning("Failed to save final SVR transforms: %s", e)
+    
     # prepare outputs
     slices_sim = cast(
         Stack,
