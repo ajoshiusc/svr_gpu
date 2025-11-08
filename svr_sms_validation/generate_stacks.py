@@ -74,6 +74,7 @@ def main():
                 mri_path=str(gt_path),
                 out_dir=str(output_subdir),
                 n_stacks=num_stacks,
+                slices_per_stack=40,
                 mb_factor=mb_factor,
                 max_rot_deg=motion_params['max_rot_deg'],
                 max_trans_mm=motion_params['max_trans_mm'],
