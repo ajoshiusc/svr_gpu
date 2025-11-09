@@ -54,52 +54,60 @@ def main():
         gt_name = gt_subdir.name
         print(f"\n[{gt_idx}/{len(gt_subdirs)}] Processing {gt_name}")
         
-        for motion_level, mb_factor, num_stacks in product(MOTION_LEVELS, MB_FACTORS, NUM_STACKS_OPTIONS):
-            stack_dir = gt_subdir / f"motion_{motion_level}_mb{mb_factor}_stacks{num_stacks}"
+        for motion_level, mb_factor in product(MOTION_LEVELS, MB_FACTORS):
+            # All 12 stacks are in the same directory, so fetch them once
+            stack_dir = gt_subdir / f"motion_{motion_level}_mb{mb_factor}_stacks12"
             
-            stack_files = sorted(stack_dir.glob("sim_stack_*.nii.gz"))
+            if not stack_dir.exists():
+                continue
             
-            perm_count = PERMUTATIONS_PER_STACK_COUNT.get(num_stacks, DEFAULT_PERMUTATIONS)
-            for perm_idx in range(1, perm_count + 1):
-                selected_files = sorted(rng.sample(stack_files, num_stacks))
-                print(
-                    f"  {motion_level:10s} MB={mb_factor} n={num_stacks:2d} perm={perm_idx:02d}",
-                    end="  ",
-                    flush=True,
-                )
+            all_stack_files = sorted(stack_dir.glob("sim_stack_*.nii.gz"))
+            if not all_stack_files or len(all_stack_files) < 12:
+                continue
+            
+            # Now iterate over different num_stacks counts
+            for num_stacks in NUM_STACKS_OPTIONS:
+                perm_count = PERMUTATIONS_PER_STACK_COUNT.get(num_stacks, DEFAULT_PERMUTATIONS)
+                for perm_idx in range(1, perm_count + 1):
+                    selected_files = sorted(rng.sample(all_stack_files, num_stacks))
+                    print(
+                        f"  {motion_level:10s} MB={mb_factor} n={num_stacks:2d} perm={perm_idx:02d}",
+                        end="  ",
+                        flush=True,
+                    )
 
-                output_subdir = (
-                    Path(OUTPUT_DIR)
-                    / gt_name
-                    / f"motion_{motion_level}_mb{mb_factor}_stacks{num_stacks}"
-                    / f"perm_{perm_idx:02d}"
-                )
-                output_subdir.mkdir(parents=True, exist_ok=True)
-                output_file = output_subdir / "svr_recon.nii.gz"
+                    output_subdir = (
+                        Path(OUTPUT_DIR)
+                        / gt_name
+                        / f"motion_{motion_level}_mb{mb_factor}_n{num_stacks}"
+                        / f"perm_{perm_idx:02d}"
+                    )
+                    output_subdir.mkdir(parents=True, exist_ok=True)
+                    output_file = output_subdir / "svr_recon.nii.gz"
 
-                sys.argv = [
-                    'svr_cli.py',
-                    '--input-stacks',
-                    *[str(f) for f in selected_files],
-                    '--output',
-                    str(output_file),
-                    '--segmentation',
-                    'threshold',
-                    '--segmentation-threshold',
-                    '100',
-                ]
-                svr_main()
-                results.append(
-                    {
-                        'status': 'success',
-                        'motion': motion_level,
-                        'mb': mb_factor,
-                        'n': num_stacks,
-                        'perm': perm_idx,
-                        'output': str(output_file),
-                    }
-                )
-                print("OK")
+                    sys.argv = [
+                        'svr_cli.py',
+                        '--input-stacks',
+                        *[str(f) for f in selected_files],
+                        '--output',
+                        str(output_file),
+                        '--segmentation',
+                        'threshold',
+                        '--segmentation-threshold',
+                        '100',
+                    ]
+                    svr_main()
+                    results.append(
+                        {
+                            'status': 'success',
+                            'motion': motion_level,
+                            'mb': mb_factor,
+                            'n': num_stacks,
+                            'perm': perm_idx,
+                            'output': str(output_file),
+                        }
+                    )
+                    print("OK")
     
     print("\n" + "="*80)
     print("SVR Reconstruction Summary")
