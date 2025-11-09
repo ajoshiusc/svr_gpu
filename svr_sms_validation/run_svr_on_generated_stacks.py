@@ -28,11 +28,11 @@ RANDOM_SEED = 1337
 
 
 BASEPATH = "/home/ajoshi/project2_ajoshi_1183"
-MYPYTHON = "python"
+PYTHON_CMD = ["python"]
 
 if not os.path.exists(BASEPATH):
     BASEPATH = "/project2/ajoshi_1183"
-    MYPYTHON = "sbatch python3gpu.job"
+    PYTHON_CMD = ["sbatch", "python3gpu.job"]
 GENERATED_STACKS_DIR = os.path.join(BASEPATH, "data/sms_sim_stacks_generated")
 OUTPUT_DIR = os.path.join(BASEPATH, "data/svr_reconstructions")
 
@@ -97,7 +97,7 @@ def main():
                     output_file = output_subdir / "svr_recon.nii.gz"
 
                     cmd = [
-                        MYPYTHON,
+                        *PYTHON_CMD,
                         SVR_CLI_PATH,
                         "--input-stacks",
                         *[str(f) for f in selected_files],
