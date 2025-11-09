@@ -122,8 +122,9 @@ def main():
                             }
                         )
                         continue
-                    
-                    subprocess.run(cmd, check=True)
+
+                    print(cmd)
+                    #subprocess.run(cmd, check=True)
                     results.append(
                         {
                             "status": "success",
