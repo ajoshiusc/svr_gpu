@@ -3,6 +3,7 @@
 Run SVR reconstruction on all generated SMS stacks.
 """
 
+import os
 import random
 import subprocess
 import sys
@@ -25,8 +26,13 @@ PERMUTATIONS_PER_STACK_COUNT = {
 }
 RANDOM_SEED = 1337
 
-GENERATED_STACKS_DIR = "/home/ajoshi/Projects/svr_gpu/test_data/sms_stacks_generated2"
-OUTPUT_DIR = "/home/ajoshi/Projects/svr_gpu/test_data/svr_reconstructions2"
+
+BASEPATH = "/home/ajoshi/project2_ajoshi_1183"
+if not os.path.exists(BASEPATH):
+    BASEPATH = "/project2/ajoshi_1183"
+
+GENERATED_STACKS_DIR = os.path.join(BASEPATH, "data/sms_sim_stacks_generated")
+OUTPUT_DIR = os.path.join(BASEPATH, "data/svr_reconstructions")
 
 
 def main():
