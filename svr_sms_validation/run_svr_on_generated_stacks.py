@@ -108,6 +108,9 @@ def main():
                         "--segmentation-threshold",
                         "100",
                     ]
+                    # make cmd as a single string for printing
+                    cmd = " ".join(f'"{c}"' if " " in c else c for c in cmd)
+                    #print(cmd_str)
 
                     if os.path.exists(output_file):
                         print("SKIP (already exists)")
@@ -124,7 +127,7 @@ def main():
                         continue
 
                     print(cmd)
-                    #subprocess.run(cmd, check=True)
+                    subprocess.run(cmd, check=True, shell=True)
                     results.append(
                         {
                             "status": "success",
