@@ -108,6 +108,21 @@ def main():
                         "--segmentation-threshold",
                         "100",
                     ]
+
+                    if os.path.exists(output_file):
+                        print("SKIP (already exists)")
+                        results.append(
+                            {
+                                "status": "skipped",
+                                "motion": motion_level,
+                                "mb": mb_factor,
+                                "n": num_stacks,
+                                "perm": perm_idx,
+                                "output": str(output_file),
+                            }
+                        )
+                        continue
+                    
                     subprocess.run(cmd, check=True)
                     results.append(
                         {
