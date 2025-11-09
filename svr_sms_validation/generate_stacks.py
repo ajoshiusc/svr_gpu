@@ -25,7 +25,7 @@ SLICE_THICKNESS = 3.0
 INPLANE_RESOLUTION = 0.8
 
 GROUND_TRUTH_DIR = "/home/ajoshi/Projects/svr_gpu/test_data/ground_truths"
-OUTPUT_DIR = "/home/ajoshi/Projects/svr_gpu/test_data/sms_stacks_generated"
+OUTPUT_DIR = "/home/ajoshi/Projects/svr_gpu/test_data/sms_stacks_generated2"
 
 
 def main():
