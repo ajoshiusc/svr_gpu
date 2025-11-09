@@ -17,21 +17,63 @@ import os
 import nibabel as nib
 from ..image import Volume, Slice, load_volume, load_mask, Stack
 from ..inr.data import PointDataset
-from pathlib import Path
+import inspect
 
 
-def _find_latest_svr_tmp():
-    base = Path.cwd()
-    candidates = [p for p in base.iterdir() if p.is_dir() and p.name.startswith('SVR')]
-    if not candidates:
-        return None
-    # pick the newest by modification time
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    for p in candidates:
-        candidate = p / 'out' / 'tmp'
-        if candidate.is_dir():
-            return str(candidate)
-    return None
+def _to_numpy(data: torch.Tensor) -> np.ndarray:
+    if isinstance(data, torch.Tensor):
+        return data.detach().cpu().numpy()
+    return np.asarray(data)
+
+
+def _save_nifti(data: torch.Tensor, path: str, affine: Optional[np.ndarray] = None) -> None:
+    try:
+        arr = _to_numpy(data)
+        if arr.ndim == 4 and arr.shape[1] == 1:
+            arr = np.moveaxis(arr, 1, -1)
+        if affine is None:
+            affine = np.eye(4)
+        nib.save(nib.Nifti1Image(arr, affine), path)
+        logging.info("Saved intermediate %s", path)
+    except Exception:
+        logging.debug("Failed to save intermediate %s", path, exc_info=True)
+
+
+def _save_numpy(data: torch.Tensor, path: str) -> None:
+    try:
+        np.save(path, _to_numpy(data))
+        logging.info("Saved intermediate %s", path)
+    except Exception:
+        logging.debug("Failed to save intermediate %s", path, exc_info=True)
+
+
+def _ensure_dir(path: str) -> str:
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _resolve_temp_root() -> str:
+    svr_tmp = os.environ.get('SVR_TEMP_DIR')
+    if svr_tmp:
+        return svr_tmp
+    output_path = None
+    for frame_info in inspect.stack():
+        local_args = frame_info.frame.f_locals.get('args', None)
+        if local_args and hasattr(local_args, 'output_volume'):
+            candidate = getattr(local_args, 'output_volume')
+            if candidate:
+                output_path = candidate
+                break
+    if output_path:
+        output_dir = os.path.dirname(os.path.abspath(output_path))
+        output_base = os.path.splitext(os.path.basename(output_path))[0]
+        if output_base.endswith('.nii'):
+            output_base = os.path.splitext(output_base)[0]
+        svr_tmp = os.path.join(output_dir, f'svr_tmp_{output_base}')
+    else:
+        svr_tmp = os.path.join(os.getcwd(), 'out', 'tmp')
+    os.environ['SVR_TEMP_DIR'] = svr_tmp
+    return svr_tmp
 
 
 def _initial_mask(
@@ -142,6 +184,14 @@ def slice_to_volume_reconstruction(
               f"_source_acquisition_order={getattr(s, '_source_acquisition_order', 'N/A')}")
     
     stack = Stack.cat(slices)
+
+    svr_tmp = _resolve_temp_root()
+    intermediates_dir = _ensure_dir(os.path.join(svr_tmp, 'intermediates'))
+    recon_dir = _ensure_dir(os.path.join(svr_tmp, 'reconstructions'))
+    transforms_dir = _ensure_dir(os.path.join(svr_tmp, 'svr'))
+
+    _save_nifti(stack.slices, os.path.join(intermediates_dir, 'stack_preprocessed.nii.gz'))
+    _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, 'stack_preprocessed_mask.nii.gz'))
     
     # Extract SMS metadata from input slices if they came from SMS stacks
     # Each slice may have stack_metadata attached during registration
@@ -187,9 +237,12 @@ def slice_to_volume_reconstruction(
         sample_orientation,
         device,
     )
+    # Save initial mask/volume
+    _save_nifti(volume.image, os.path.join(intermediates_dir, 'initial_mask_volume.nii.gz'))
 
     # data normalization
     stack, max_intensity, min_intensity = _normalize(stack, output_intensity_mean)
+    _save_nifti(stack.slices, os.path.join(intermediates_dir, 'stack_normalized.nii.gz'))
 
     # define psf
     psf_tensor = get_PSF(
@@ -201,24 +254,13 @@ def slice_to_volume_reconstruction(
         device=volume.device,
         psf_type=psf,
     )
+    _save_numpy(psf_tensor, os.path.join(intermediates_dir, 'psf_tensor.npy'))
 
-    # outer loop
     for i in range(n_iter):
         logging.info("outer %d", i)
         # Save volume at the start of outer iteration
-        try:
-            # Always attempt to save: prefer SVR_TEMP_DIR, then latest SVR run tmp, else ./out/tmp
-            svr_tmp = os.environ.get('SVR_TEMP_DIR') or _find_latest_svr_tmp() or os.path.join(os.getcwd(), 'out', 'tmp')
-            out_dir = os.path.join(svr_tmp, 'reconstructions')
-            os.makedirs(out_dir, exist_ok=True)
-            # Build affine from volume if available, else identity
-            affine = getattr(volume, 'affine', None)
-            if affine is None:
-                affine = np.eye(4)
-            out_path = os.path.join(out_dir, f'recon_outer_{i:02d}.nii.gz')
-            nib.save(nib.Nifti1Image(volume.image.cpu().numpy(), affine), out_path)
-        except Exception:
-            logging.debug('Failed to save outer iteration reconstruction', exc_info=True)
+        affine = getattr(volume, 'affine', None)
+        _save_nifti(volume.image, os.path.join(recon_dir, f'recon_outer_{i:02d}.nii.gz'), affine)
         # slice-to-volume registration
         if i > 0:  # skip slice-to-volume registration for the first iteration
             svr = SliceToVolumeRegistration(
@@ -233,12 +275,17 @@ def slice_to_volume_reconstruction(
                 use_mask=True,
             )
             stack.transformation = slices_transform
+            # Save stack transformation after registration
+            _save_numpy(stack.transformation.matrix(), os.path.join(intermediates_dir, f'stack_transform_outer_{i:02d}.npy'))
 
         # global structual exclusion
         if i > 0 and not no_global_exclusion:
             stack.mask = slices_mask_backup.clone()
             excluded = global_ncc_exclusion(stack, volume, global_ncc_threshold)
             stack.mask[excluded] = False
+            # Save mask after global exclusion
+            _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, f'mask_after_global_exclusion_outer_{i:02d}.nii.gz'))
+
         # PSF reconstruction & volume mask
         volume = psf_reconstruction(
             stack,
@@ -247,6 +294,7 @@ def slice_to_volume_reconstruction(
             use_mask=not with_background,
             psf=psf_tensor,
         )
+        _save_nifti(volume.image, os.path.join(intermediates_dir, f'volume_after_psf_outer_{i:02d}.nii.gz'))
 
         # init EM
         em = EM(max_intensity, min_intensity)
@@ -265,21 +313,50 @@ def slice_to_volume_reconstruction(
                     psf=psf_tensor,
                 ),
             )
+            _save_nifti(
+                slices_sim.slices,
+                os.path.join(intermediates_dir, f'slices_sim_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+            )
+            _save_nifti(
+                slices_weight.slices,
+                os.path.join(intermediates_dir, f'slices_weight_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+            )
             # scale
             scale = slices_scale(stack, slices_sim, slices_weight, p_voxel, True)
+            _save_numpy(scale, os.path.join(intermediates_dir, f'scale_outer_{i:02d}_inner_{j:02d}.npy'))
             # err
             err = simulated_error(stack, slices_sim, scale)
+            _save_nifti(
+                err.slices,
+                os.path.join(intermediates_dir, f'err_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+            )
             # EM robust statistics
             if (not no_pixel_robust_statistics) or (not no_slice_robust_statistics):
                 p_voxel, p_slice = em(err, slices_weight, scale, 1)
+                _save_nifti(
+                    p_voxel,
+                    os.path.join(intermediates_dir, f'p_voxel_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                )
+                _save_numpy(
+                    p_slice,
+                    os.path.join(intermediates_dir, f'p_slice_outer_{i:02d}_inner_{j:02d}.npy'),
+                )
                 if no_pixel_robust_statistics:  # reset p_voxel
                     p_voxel = torch.ones_like(stack.slices)
             p = p_voxel
             if not no_slice_robust_statistics:
                 p = p_voxel * p_slice.view(-1, 1, 1, 1)
+            _save_nifti(
+                p,
+                os.path.join(intermediates_dir, f'p_combined_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+            )
             # local structural exclusion
             if not no_local_exclusion:
                 p = p * local_ssim_exclusion(stack, slices_sim, local_ssim_threshold)
+                _save_nifti(
+                    p,
+                    os.path.join(intermediates_dir, f'p_after_local_exclusion_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                )
             # super-resolution update
             beta = max(0.01, 0.08 / (2**i))
             alpha = min(1, 0.05 / beta)
@@ -294,32 +371,14 @@ def slice_to_volume_reconstruction(
                 psf=psf_tensor,
             )
             # Save volume after inner iteration
-            try:
-                # Always attempt to save: prefer SVR_TEMP_DIR, then latest SVR run tmp, else ./out/tmp
-                svr_tmp = os.environ.get('SVR_TEMP_DIR') or _find_latest_svr_tmp() or os.path.join(os.getcwd(), 'out', 'tmp')
-                out_dir = os.path.join(svr_tmp, 'reconstructions')
-                os.makedirs(out_dir, exist_ok=True)
-                affine = getattr(volume, 'affine', None)
-                if affine is None:
-                    affine = np.eye(4)
-                out_path = os.path.join(out_dir, f'recon_outer_{i:02d}_inner_{j:02d}.nii.gz')
-                nib.save(nib.Nifti1Image(volume.image.cpu().numpy(), affine), out_path)
-            except Exception:
-                logging.debug('Failed to save inner iteration reconstruction', exc_info=True)
+            affine = getattr(volume, 'affine', None)
+            _save_nifti(volume.image, os.path.join(recon_dir, f'recon_outer_{i:02d}_inner_{j:02d}.nii.gz'), affine)
 
     # reconstruction finished
     # Save final transforms after SVR completes
-    try:
-        import numpy as np
-        svr_tmp = os.environ.get('SVR_TEMP_DIR') or _find_latest_svr_tmp() or os.path.join(os.getcwd(), 'out', 'tmp')
-        svr_dir = os.path.join(svr_tmp, 'svr')
-        os.makedirs(svr_dir, exist_ok=True)
-        # Save final stack transformation after SVR
-        mat = stack.transformation.matrix().detach().cpu().numpy()
-        np.save(os.path.join(svr_dir, 'transforms_svr_final.npy'), mat)
-        logging.info("Saved final SVR transforms to %s", os.path.join(svr_dir, 'transforms_svr_final.npy'))
-    except Exception as e:
-        logging.warning("Failed to save final SVR transforms: %s", e)
+    _save_numpy(stack.transformation.matrix(), os.path.join(transforms_dir, 'transforms_svr_final.npy'))
+    _save_nifti(volume.image, os.path.join(intermediates_dir, 'volume_final.nii.gz'))
+    _save_nifti(volume.mask.float(), os.path.join(intermediates_dir, 'volume_mask_final.nii.gz'))
     
     # prepare outputs
     slices_sim = cast(
