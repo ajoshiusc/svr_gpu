@@ -4,12 +4,13 @@ Run SVR reconstruction on all generated SMS stacks.
 """
 
 import random
+import subprocess
 import sys
 from pathlib import Path
 from itertools import product
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from svr_cli import main as svr_main
+# Get the svr_cli.py path
+SVR_CLI_PATH = str(Path(__file__).parent.parent / "svr_cli.py")
 
 # Configuration
 MOTION_LEVELS = ['none', 'mild', 'moderate', 'severe']
@@ -85,8 +86,9 @@ def main():
                     output_subdir.mkdir(parents=True, exist_ok=True)
                     output_file = output_subdir / "svr_recon.nii.gz"
 
-                    sys.argv = [
-                        'svr_cli.py',
+                    cmd = [
+                        'python',
+                        SVR_CLI_PATH,
                         '--input-stacks',
                         *[str(f) for f in selected_files],
                         '--output',
@@ -96,7 +98,7 @@ def main():
                         '--segmentation-threshold',
                         '100',
                     ]
-                    svr_main()
+                    subprocess.run(cmd, check=True)
                     results.append(
                         {
                             'status': 'success',
