@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import nibabel as nib
 import os
@@ -245,7 +246,19 @@ def generate_simulated_stacks(
         mb = int(max(1, mb_factor))
         if mb > nz:
             mb = nz
-        groups = [[s for s in order if (s % mb) == r] for r in range(mb)] if mb > 1 else [order]
+        if mb > 1:
+            num_groups = int(math.ceil(nz / mb))
+            groups: List[List[int]] = []
+            for g in range(num_groups):
+                group: List[int] = []
+                for k in range(mb):
+                    idx = g + k * num_groups
+                    if idx < len(order):
+                        group.append(order[idx])
+                if group:
+                    groups.append(group)
+        else:
+            groups = [order]
 
         base_3x3 = stack_affine[:3, :3]
         cx, cy = (nx - 1) / 2.0, (ny - 1) / 2.0

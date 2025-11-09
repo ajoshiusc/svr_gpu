@@ -3,6 +3,8 @@ import nibabel as nib
 import numpy as np
 import torch
 
+from standalone_inlined.svr.registration import _build_sms_groups
+
 # Helper to load stack and extract SMS metadata
 def load_stack_with_sms_metadata(stack_path):
     img = nib.load(stack_path)
@@ -30,8 +32,8 @@ def validate_sms_registration(stack_paths, svr_transform_path):
         nz = data.shape[2]
         print(f"Stack: {stack_path}, mb_factor: {mb_factor}, acquisition_order: {acq_order}")
         if mb_factor > 1:
-            # Build SMS groups
-            groups = [[s for s in range(nz) if (s % mb_factor) == r] for r in range(mb_factor)]
+            # Build SMS groups using registration helper for consistency
+            groups = _build_sms_groups(nz, mb_factor, acq_order)
             for group in groups:
                 if len(group) > 1:
                     group_transforms = transforms[group]
@@ -85,8 +87,7 @@ if __name__ == "__main__":
             print(f"  Number of slices: {nz}, transforms shape: {stack_transforms.shape}")
             
             if mb_factor > 1:
-                # Build SMS groups
-                groups = [[s for s in range(nz) if (s % mb_factor) == r] for r in range(mb_factor)]
+                groups = _build_sms_groups(nz, mb_factor, acq_order)
                 for group in groups:
                     if len(group) > 1:
                         group_transforms = stack_transforms[group]

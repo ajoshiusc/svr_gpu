@@ -1,3 +1,4 @@
+import math
 import types
 from typing import Dict, Any, Tuple, Callable, Union, cast, Optional, List
 import numpy as np
@@ -384,12 +385,19 @@ def _build_sms_groups(nz: int, mb_factor: int, acq_order: Optional[str] = None) 
     else:  # default: interleaved-odd-even
         order = list(range(0, nz, 2)) + list(range(1, nz, 2))
     
-    # Group by modulo class to space slices across the slab
-    mb = min(mb_factor, nz)
-    groups = [[s for s in order if (s % mb) == r] for r in range(mb)]
-    
-    # Filter out empty groups
-    groups = [g for g in groups if g]
+    # Re-group slices so that each SMS excitation forms one group
+    mb = max(1, min(mb_factor, nz))
+    num_groups = int(math.ceil(nz / mb))
+
+    groups: List[List[int]] = []
+    for g in range(num_groups):
+        group: List[int] = []
+        for k in range(mb):
+            idx = g + k * num_groups
+            if idx < nz:
+                group.append(order[idx])
+        if group:
+            groups.append(group)
     
     return groups
 
