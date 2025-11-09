@@ -41,13 +41,10 @@ def _initial_mask(
     sample_orientation: Optional[PathType],
     device: DeviceType,
 ) -> Tuple[Volume, bool]:
+    # Determine if any slice originates from an SMS stack
+    sms_mode = any(getattr(s, "_source_mb_factor", 1) and getattr(s, "_source_mb_factor", 1) > 1 for s in slices)
     dataset = PointDataset(slices)
     mask = dataset.mask
-    # If mask is all zero (e.g., simulated stacks or --segmentation none), force to all ones BEFORE resampling
-    if mask.mask is None or mask.mask.sum() == 0:
-        print("[SVR][DEBUG] Forcing mask to all ones before resampling (simulated or non-brain stack)")
-        # create Volume-like object with full mask
-        mask.mask = mask.image > -np.inf  # all True
     if sample_mask is not None:
         mask = load_mask(sample_mask, device)
     transformation = None

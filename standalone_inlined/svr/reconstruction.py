@@ -8,6 +8,12 @@ from ..image import Volume, Stack
 from ..psf import get_PSF
 
 
+def _is_sms_stack(stack: Stack) -> bool:
+    if hasattr(stack, "sms_metadata"):
+        return True
+    return getattr(stack, "mb_factor", 1) > 1
+
+
 def dot(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.dot(x.flatten(), y.flatten())
 
@@ -46,6 +52,45 @@ def psf_reconstruction(
     use_mask: bool = False,
     psf: Optional[torch.Tensor] = None,
 ) -> Volume:
+    if _is_sms_stack(slices):
+        slices_transform_mat, res_s, res_r, s_thick, psf = _parse_stack_volume(
+            slices, volume, psf
+        )
+
+        if update_mask:
+            m = (
+                slice_acquisition_adjoint(
+                    slices_transform_mat,
+                    psf,
+                    slices.mask.float(),
+                    None,
+                    None,
+                    volume.shape[-3:],
+                    res_s / res_r,
+                    False,
+                    equalize=True,
+                )
+                > 0.1
+            )[0, 0]
+        else:
+            m = volume.mask
+
+        v = slice_acquisition_adjoint(
+            slices_transform_mat,
+            psf,
+            slices.slices,
+            slices.mask if use_mask else None,
+            volume.mask[None, None] if use_mask else None,
+            volume.shape[-3:],
+            res_s / res_r,
+            False,
+            equalize=True,
+        )[0, 0]
+
+        v = torch.where(torch.isfinite(v), v, torch.zeros_like(v))
+
+        return cast(Volume, Volume.like(volume, v, m, deep=False))
+
     slices_transform_mat, res_s, res_r, s_thick, psf = _parse_stack_volume(
         slices, volume, psf
     )
@@ -63,7 +108,7 @@ def psf_reconstruction(
                 False,
                 equalize=True,
             )
-            > 0.1  # Lowered from 0.3 to allow reconstruction in less-covered regions
+            > 0.3
         )[0, 0]
     else:
         m = volume.mask
@@ -80,9 +125,6 @@ def psf_reconstruction(
         equalize=True,
     )[0, 0]
 
-    # Check for NaN/Inf in reconstructed volume and replace with zeros
-    v = torch.where(torch.isfinite(v), v, torch.zeros_like(v))
-    
     return cast(Volume, Volume.like(volume, v, m, deep=False))
 
 
@@ -231,7 +273,6 @@ def srr_update(
     use_mask: bool = False,
     psf: Optional[torch.Tensor] = None,
 ) -> Volume:
-    # beta = beta * delta * delta
     err = e.slices
     volume = v.image[None, None]
     if p is not None:
@@ -240,6 +281,7 @@ def srr_update(
         err = p * err
 
     transforms, res_s, res_r, s_thick, psf = _parse_stack_volume(e, v, psf)
+    is_sms = _is_sms_stack(e)
 
     g = slice_acquisition_adjoint(
         transforms,
@@ -265,13 +307,17 @@ def srr_update(
             False,
             False,
         )
-        cmap_mask = cmap > 1e-10  # Use small threshold instead of 0 to avoid division by near-zero
-        g[cmap_mask] /= cmap[cmap_mask]
-        # Check for NaN/Inf after division
+        if is_sms:
+            cmap_mask = cmap > 1e-10
+            g[cmap_mask] /= cmap[cmap_mask]
+            g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+        else:
+            cmap_mask = cmap > 0
+            g[cmap_mask] /= cmap[cmap_mask]
+
+    if is_sms:
         g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
-    
-    # Check g for NaN/Inf before using it
-    g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+
     reconstructed = F.relu(volume + alpha * g, True)
 
     g = torch.zeros_like(volume)
@@ -291,24 +337,28 @@ def srr_update(
                 ]
                 d2 = dx * dx + dy * dy + dz * dz
                 dv2 = (v1 - v0) ** 2
-                # Clamp dv2 to prevent numerical instability
-                dv2 = torch.clamp(dv2, min=0, max=1e6)
-                # Add epsilon to prevent division by zero and NaN
-                denominator = d2 * torch.sqrt(1 + 1 / (d2 * delta * delta) * dv2 + 1e-10)
-                b = 1 / (denominator + 1e-10)
-                # Check for NaN/Inf and replace with zeros
-                b = torch.where(torch.isfinite(b), b, torch.zeros_like(b))
+                if is_sms:
+                    dv2 = torch.clamp(dv2, min=0, max=1e6)
+                    denominator = d2 * torch.sqrt(1 + 1 / (d2 * delta * delta) * dv2 + 1e-10)
+                    b = 1 / (denominator + 1e-10)
+                    b = torch.where(torch.isfinite(b), b, torch.zeros_like(b))
+                else:
+                    b = 1 / (d2 * torch.sqrt(1 + 1 / (d2 * delta * delta) * dv2))
                 diff = b * (r1 - r0)
-                # Additional NaN check on the difference
-                diff = torch.where(torch.isfinite(diff), diff, torch.zeros_like(diff))
+                if is_sms:
+                    diff = torch.where(torch.isfinite(diff), diff, torch.zeros_like(diff))
                 g[:, :, 1 : D - 1, 1 : H - 1, 1 : W - 1] += diff
     if p is not None:
         g *= cmap_mask
-    # Check g for NaN/Inf before adding
-    g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+
+    if is_sms:
+        g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+
     reconstructed.add_(g, alpha=alpha * beta)
-    # Final NaN check after addition
-    reconstructed = torch.where(torch.isfinite(reconstructed), reconstructed, volume)
+
+    if is_sms:
+        reconstructed = torch.where(torch.isfinite(reconstructed), reconstructed, volume)
+
     reconstructed = F.relu(reconstructed, True)
     return cast(Volume, Volume.like(v, reconstructed[0, 0], deep=False))
 

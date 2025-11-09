@@ -195,3 +195,4 @@ output_svr002_dicom/
 main_test_3delasticdeformation2.py
 test_data/*
 
+best_svr/*

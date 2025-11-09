@@ -12,10 +12,14 @@ import sys
 import os
 import tempfile
 import shutil
+import json
 from pathlib import Path
 import numpy as np
 import nibabel as nib
 import torch
+import gc
+import contextlib
+
 from argparse import Namespace
 from typing import List, Dict, Any, Optional, Tuple
 from skimage.filters import threshold_multiotsu
@@ -536,9 +540,18 @@ def preprocess_inputs(args: Namespace):
                 pass
         if args.segmentation and str(args.segmentation).lower() != 'none':
             logger.info("Running segmentation")
+            # Preserve masks in case segmentation removes everything
+            pre_seg_masks = [stack.mask.clone() for stack in input_dict["input_stacks"]]
             input_dict["input_stacks"] = _segment_stack(
                 args, input_dict["input_stacks"]
             )
+            # Detect if segmentation emptied all stacks
+            non_empty_masks = [stack.mask.any().item() for stack in input_dict["input_stacks"]]
+            if not any(non_empty_masks):
+                logger.warning("Segmentation produced empty masks for all stacks; disabling segmentation and reverting masks.")
+                for stack, mask_backup in zip(input_dict["input_stacks"], pre_seg_masks):
+                    stack.mask = mask_backup
+                args.segmentation = None
         
         # Bias field correction (if enabled)
         if args.bias_field_correction:

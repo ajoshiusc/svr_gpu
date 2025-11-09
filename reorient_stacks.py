@@ -34,7 +34,7 @@ def reorient_to_axial(input_path: str, output_path: str, verbose: bool = True):
     img = sitk.ReadImage(input_path)
     
     # Get original spacing (resolutions)
-    spacing = img.GetSpacing()
+    spacing = np.array(img.GetSpacing(), dtype=float)
     
     if verbose:
         print(f"\nProcessing: {os.path.basename(input_path)}")
@@ -42,9 +42,18 @@ def reorient_to_axial(input_path: str, output_path: str, verbose: bool = True):
     
     # Detect slice-stacking axis (dimension with largest voxel size)
     # This matches: sliceaxis = np.argmax(img.GetSpacing())
-    slice_axis = np.argmax(spacing)
+    # If spacings are isotropic (or almost), the stack already matches the
+    # expected orientation and we should not permute axes.
+    spacing_range = spacing.max() - spacing.min()
+    isotropic = spacing_range <= 1e-3
+    if isotropic:
+        slice_axis = 2
+    else:
+        slice_axis = int(np.argmax(spacing))
     
     if verbose:
+        if isotropic:
+            print("  Spacing nearly isotropic; skipping reorientation")
         print(f"  Slice axis detected: {slice_axis} ({['X','Y','Z'][slice_axis]}, thickness={spacing[slice_axis]:.3f}mm)")
     
     # Reorient using PermuteAxes to match rotate2makeslice_z.py exactly:
