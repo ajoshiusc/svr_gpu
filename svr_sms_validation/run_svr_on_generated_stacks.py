@@ -109,9 +109,9 @@ def main():
                         "--segmentation",
                         "threshold",
                         "--segmentation-threshold",
-                        "100","'"
+                        "100",
                         "--device",
-                        "0",
+                        "0","'"
                     ]
                     # make cmd as a single string for printing
                     cmd = " ".join(f'"{c}"' if " " in c else c for c in cmd)
