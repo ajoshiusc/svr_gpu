@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64GB
 #SBATCH --time=47:00:00
-#SBATCH --account=ajoshi_27
+#SBATCH --account=ajoshi_1183
 #SBATCH --partition=gpu 
 
 
@@ -22,14 +22,14 @@ nvidia-smi
 echo "Running: " $1
 
 # Check if the argument is a shell script or Python script and execute accordingly
-if [[ $1 == *.sh ]]; then
-    echo "Executing shell script: $1"
-    bash $1
-elif [[ $1 == *.py ]]; then
-    echo "Executing Python script: $1"
+#if [[ $1 == *.sh ]]; then
+#    echo "Executing shell script: $1"
+#    bash $1
+#elif [[ $1 == *.py ]]; then
+#    echo "Executing Python script: $1"
     python $1
-else
-    echo "Executing as shell command: $1"
-    $1
-fi
+#else
+#    echo "Executing as shell command: $1"
+#    $1
+#fi
 
