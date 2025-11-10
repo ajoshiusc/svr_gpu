@@ -270,6 +270,7 @@ def srr_update(
     alpha: float,
     beta: float,
     delta: float,
+    scale: torch.Tensor,
     use_mask: bool = False,
     psf: Optional[torch.Tensor] = None,
 ) -> Volume:
@@ -324,6 +325,10 @@ def srr_update(
     D, H, W = volume.shape[-3:]
     v0 = volume[:, :, 1 : D - 1, 1 : H - 1, 1 : W - 1]
     r0 = reconstructed[:, :, 1 : D - 1, 1 : H - 1, 1 : W - 1]
+    
+    # Use the mean of the slice-wise scale factors to adjust delta
+    scaled_delta = delta * scale.mean()
+
     for dx in [-1, 0, 1]:
         for dy in [-1, 0, 1]:
             for dz in [-1, 0, 1]:
@@ -339,11 +344,11 @@ def srr_update(
                 dv2 = (v1 - v0) ** 2
                 if is_sms:
                     dv2 = torch.clamp(dv2, min=0, max=1e6)
-                    denominator = d2 * torch.sqrt(1 + 1 / (d2 * delta * delta) * dv2 + 1e-10)
+                    denominator = d2 * torch.sqrt(1 + 1 / (d2 * scaled_delta * scaled_delta) * dv2 + 1e-10)
                     b = 1 / (denominator + 1e-10)
                     b = torch.where(torch.isfinite(b), b, torch.zeros_like(b))
                 else:
-                    b = 1 / (d2 * torch.sqrt(1 + 1 / (d2 * delta * delta) * dv2))
+                    b = 1 / (d2 * torch.sqrt(1 + 1 / (d2 * scaled_delta * scaled_delta) * dv2))
                 diff = b * (r1 - r0)
                 if is_sms:
                     diff = torch.where(torch.isfinite(diff), diff, torch.zeros_like(diff))

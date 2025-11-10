@@ -584,6 +584,8 @@ def run_svr(args: Namespace):
     """
     Run the complete SVR pipeline using exact NeSVoR components.
     """
+    if not hasattr(args, "no_intensity_normalization"):
+        args.no_intensity_normalization = False
     # Preprocess inputs (loads, thresholds, masks, segments, corrects bias, assesses, registers)
     logger.info("Preprocessing inputs...")
     input_dict, args = preprocess_inputs(args)
@@ -592,23 +594,25 @@ def run_svr(args: Namespace):
     logger.info("Running SVR reconstruction...")
     try:
         output_volume, output_slices, mask = slice_to_volume_reconstruction(
-        slices=input_dict["input_slices"],
-        sample_mask=input_dict.get("volume_mask", None),
-        with_background=args.with_background,
-        output_resolution=args.output_resolution,
-        output_intensity_mean=args.output_intensity_mean,
-        delta=args.delta,
-        n_iter=args.n_iter,
-        n_iter_rec=args.n_iter_rec,
-        global_ncc_threshold=args.global_ncc_threshold,
-        local_ssim_threshold=args.local_ssim_threshold,
-        no_slice_robust_statistics=args.no_slice_robust_statistics,
-        no_pixel_robust_statistics=args.no_pixel_robust_statistics,
-        no_global_exclusion=args.no_global_exclusion,
-        no_local_exclusion=args.no_local_exclusion,
-        psf=args.psf,
-        device=args.device,
-    )
+            slices=input_dict["input_slices"],
+            sample_mask=input_dict.get("volume_mask", None),
+            with_background=args.with_background,
+            output_resolution=args.output_resolution,
+            output_intensity_mean=args.output_intensity_mean,
+            delta=args.delta,
+            n_iter=args.n_iter,
+            n_iter_rec=args.n_iter_rec,
+            global_ncc_threshold=args.global_ncc_threshold,
+            local_ssim_threshold=args.local_ssim_threshold,
+            no_slice_robust_statistics=args.no_slice_robust_statistics,
+            no_pixel_robust_statistics=args.no_pixel_robust_statistics,
+            no_global_exclusion=args.no_global_exclusion,
+            no_local_exclusion=args.no_local_exclusion,
+            no_registration=args.no_registration,
+            psf=args.psf,
+            device=args.device,
+            normalize_stacks=not args.no_intensity_normalization,
+        )
     except TypeError as e:
         logger.warning("SVR EM outlier error detected; retrying without segmentation. Error: %s", e)
         # Retry with segmentation disabled
@@ -627,8 +631,10 @@ def run_svr(args: Namespace):
             no_pixel_robust_statistics=args.no_pixel_robust_statistics,
             no_global_exclusion=args.no_global_exclusion,
             no_local_exclusion=args.no_local_exclusion,
+            no_registration=args.no_registration,
             psf=args.psf,
             device=args.device,
+            normalize_stacks=not args.no_intensity_normalization,
         )
     
     # Save outputs
@@ -654,6 +660,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help='Output volume path')
     parser.add_argument('--device', type=int, default=0,
                         help='CUDA device ID (default: 0). Use -1 to force CPU.')
+    parser.add_argument('--no-intensity-normalization', action='store_true',
+                        help='Skip rescaling stacks to a common intensity mean before reconstruction')
 
     # Preprocessing arguments
     parser.add_argument('--stack-masks', nargs='+', default=None,
@@ -750,11 +758,35 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--no-slice-robust-statistics', action='store_true',
                         help='Disable per-slice robust statistics (outlier weighting)')
     parser.add_argument('--no-pixel-robust-statistics', action='store_true',
-                        help='Disable per-pixel robust statistics (outlier weighting)')
-    parser.add_argument('--no-global-exclusion', action='store_true',
-                        help='Disable global structural exclusion (NCC-based slice rejection)')
-    parser.add_argument('--no-local-exclusion', action='store_true',
-                        help='Disable local structural exclusion (SSIM-based pixel rejection)')
+                        help='Disable robust statistics for pixels.')
+    parser.add_argument(
+        "--no-registration",
+        action="store_true",
+        default=True,
+        help="Disable slice-to-volume registration after the first iteration (default: True).",
+    )
+    parser.add_argument(
+        "--enable-registration",
+        action="store_false",
+        dest="no_registration",
+        help="Enable slice-to-volume registration after the first iteration.",
+    )
+    parser.add_argument(
+        "--no-global-exclusion",
+        action="store_true",
+        help="Disable global structural exclusion (NCC-based slice rejection, disabled by default)",
+    )
+    parser.add_argument(
+        "--enable-global-exclusion",
+        action="store_false",
+        dest="no_global_exclusion",
+        help="Enable global structural exclusion (NCC-based slice rejection)",
+    )
+    parser.add_argument(
+        "--no-local-exclusion",
+        action="store_true",
+        help="Disable local structural exclusion (SSIM-based pixel rejection)",
+    )
 
     return parser
 

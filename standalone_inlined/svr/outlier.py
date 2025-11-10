@@ -32,6 +32,7 @@ class EM(nn.Module):
         weight: Optional[Union[Stack, torch.Tensor]] = None,
         scale: Optional[torch.Tensor] = None,
         n_iter: int = 3,
+        disable_slice_updates: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # get inputs
         err = e.slices
@@ -82,8 +83,33 @@ class EM(nn.Module):
         )
 
         denom = mask_voxel_high.sum((1, 2, 3))
-        potential = ((1 - self.p_voxel) ** 2) * mask_voxel_high
-        potential = torch.sqrt(potential.sum((1, 2, 3)) / denom)
+        numerator = ((1 - self.p_voxel) ** 2) * mask_voxel_high
+        numerator = numerator.sum((1, 2, 3))
+        
+        # Compute potential with safe division
+        potential = torch.zeros_like(numerator, dtype=err.dtype)
+        valid = denom > 0
+        if valid.any():
+            potential[valid] = torch.sqrt(numerator[valid] / denom[valid])
+        
+        # For slices with zero denom, try relaxed thresholds
+        if (~valid).any():
+            zero_denom_indices = torch.where(~valid)[0]
+            for idx in zero_denom_indices:
+                # Try relaxed threshold (0.5 instead of 0.99)
+                relaxed_mask = weight[idx] > 0.5
+                relaxed_denom = relaxed_mask.sum()
+                if relaxed_denom > 0:
+                    relaxed_numerator = (((1 - self.p_voxel[idx]) ** 2) * relaxed_mask).sum()
+                    potential[idx] = torch.sqrt(relaxed_numerator / relaxed_denom)
+                else:
+                    # Final fallback: use any positive weight
+                    final_mask = mask_voxel_low[idx]
+                    final_denom = final_mask.sum()
+                    if final_denom > 0:
+                        final_numerator = (((1 - self.p_voxel[idx]) ** 2) * final_mask).sum()
+                        potential[idx] = torch.sqrt(final_numerator / final_denom)
+                    # If still zero, potential remains 0
         mask_1 = denom > 0
         mask_slice = mask_1
         slices_mask_sum = slices_mask.sum((1, 2, 3))
@@ -93,6 +119,14 @@ class EM(nn.Module):
         if scale is not None:
             mask_3 = (scale > 0.2) & (scale < 5)
             mask_slice = mask_slice & mask_3
+
+        if disable_slice_updates:
+            self.p_slice = torch.ones(
+                mask_slice.shape,
+                device=err.device,
+                dtype=err.dtype,
+            )
+            return self.p_voxel, self.p_slice
 
         if self.p_slice is None:
             self.p_slice = torch.ones_like(mask_slice, dtype=torch.float)
@@ -122,6 +156,8 @@ def voxel_outlier_update(
     p = gc / (gc + (1 - c) * m + 1e-10)
     # Check for NaN/Inf and replace with ones (assume inlier if uncertain)
     p = torch.where(torch.isfinite(p), p, torch.ones_like(p))
+    # Clamp to prevent overly aggressive voxel rejection (minimum 20% contribution)
+    p = torch.clamp(p, min=0.2, max=1.0)
     return p
 
 
@@ -190,6 +226,22 @@ def slice_outlier_update(
         mu_in = x.mean()
     if not torch.isfinite(mu_out):
         mu_out = x.max()
+    
+    # Ultimate fallback if x itself contains NaN/Inf
+    finite_mask = torch.isfinite(x)
+    if finite_mask.any():
+        if not torch.isfinite(mu_in):
+            mu_in = x[finite_mask].mean()
+        if not torch.isfinite(mu_out):
+            mu_out = x[finite_mask].max()
+    else:
+        # If all values are NaN/Inf, use reasonable defaults
+        mu_in = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+        mu_out = torch.tensor(1.0, device=x.device, dtype=x.dtype)
+    if not torch.isfinite(mu_in):
+        mu_in = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+    if not torch.isfinite(mu_out):
+        mu_out = torch.tensor(1.0, device=x.device, dtype=x.dtype)
 
     sum2_in = torch.dot((x - mu_in) ** 2, p)
     sum2_out = torch.dot((x - mu_out) ** 2, p)
@@ -220,18 +272,27 @@ def slice_outlier_update(
         logging.warning("All slices are classified as outlier, reset")
         p = torch.ones_like(p)
     else:
-        g_in = torch.distributions.normal.Normal(mu_in, sigma_in).log_prob(x).exp()
-        g_out = torch.distributions.normal.Normal(mu_out, sigma_out).log_prob(x).exp()
+        # Ensure mu_in and mu_out are scalars (not tensors) for Normal distribution
+        mu_in_scalar = mu_in.item() if isinstance(mu_in, torch.Tensor) else mu_in
+        mu_out_scalar = mu_out.item() if isinstance(mu_out, torch.Tensor) else mu_out
+        sigma_in_scalar = sigma_in.item() if isinstance(sigma_in, torch.Tensor) else sigma_in
+        sigma_out_scalar = sigma_out.item() if isinstance(sigma_out, torch.Tensor) else sigma_out
+        
+        g_in = torch.distributions.normal.Normal(mu_in_scalar, sigma_in_scalar).log_prob(x).exp()
+        g_out = torch.distributions.normal.Normal(mu_out_scalar, sigma_out_scalar).log_prob(x).exp()
         # Add epsilon to prevent division by zero
         p = c * g_in / (c * g_in + (1 - c) * g_out + 1e-10)
         # Check for NaN/Inf
         p = torch.where(torch.isfinite(p), p, torch.ones_like(p))
-        mask_p = p > 0
-        p[~mask_p] = 1
-        p[torch.logical_and(x > mu_out, ~mask_p)] = 0
+        # Clamp very small probabilities to avoid overly aggressive slice rejection (minimum 30% contribution)
+        p = torch.clamp(p, min=0.3, max=1.0)
 
     c = p.mean()
-    logging.debug("N_in = %d, mu_in = %f, mu_out = %f, c=%f", N_in, mu_in, mu_out, c)
+    # Log if too many slices are being rejected
+    low_prob_count = (p < 0.1).sum().item()
+    if low_prob_count > len(p) * 0.5:
+        logging.warning("More than 50%% of slices have low probability (<%d out of %d), this may indicate overly aggressive outlier detection", low_prob_count, len(p))
+    logging.debug("N_in = %d, mu_in = %f, mu_out = %f, c=%f, low_prob_slices=%d/%d", N_in, mu_in, mu_out, c, low_prob_count, len(p))
 
     return c, p
 
@@ -246,15 +307,31 @@ def global_ncc_exclusion(stack: Stack, volume: Volume, threshold) -> torch.Tenso
     )
     excluded = ncc < threshold
     num_excluded = torch.count_nonzero(excluded).item()
-    if num_excluded == excluded.shape[0]:
+    total_slices = excluded.shape[0]
+    
+    # Safety check: don't exclude too many slices (max 50%)
+    if num_excluded > total_slices * 0.5:
+        logging.warning(
+            "Global NCC exclusion would exclude %d/%d slices (>50%%). "
+            "Using adaptive threshold instead to keep 50%% of slices.",
+            num_excluded, total_slices
+        )
+        # Sort NCC values and find threshold that keeps top 50%
+        ncc_sorted, _ = torch.sort(ncc, descending=True)
+        adaptive_threshold = ncc_sorted[total_slices // 2].item()
+        excluded = ncc < adaptive_threshold
+        num_excluded = torch.count_nonzero(excluded).item()
+    
+    if num_excluded == total_slices:
         logging.warning("All slices excluded according to global NCC. Reset.")
         excluded = torch.zeros_like(excluded)
         num_excluded = 0
+    
     logging.info(
         "global structural exlusion: mean ncc = %f, num_excluded = %d, mean ncc after exclusion = %f",
         ncc.mean().item(),
         num_excluded,
-        ncc[~excluded].mean().item(),
+        ncc[~excluded].mean().item() if num_excluded < total_slices else ncc.mean().item(),
     )
     return excluded
 

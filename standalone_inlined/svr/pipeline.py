@@ -15,9 +15,10 @@ from ..types import DeviceType, PathType
 from ..psf import get_PSF
 import os
 import nibabel as nib
-from ..image import Volume, Slice, load_volume, load_mask, Stack
+from ..image import Volume, Slice, load_volume, load_mask, Stack, RigidTransform
 from ..inr.data import PointDataset
 import inspect
+import torch.nn.functional as F
 
 
 def _to_numpy(data: torch.Tensor) -> np.ndarray:
@@ -139,15 +140,29 @@ def _check_resolution_and_shape(slices: List[Slice]) -> List[Slice]:
 
 def _normalize(
     stack: Stack, output_intensity_mean: float
-) -> Tuple[Stack, float, float]:
+) -> Tuple[Stack, float, float, float, float]:
     masked_v = stack.slices[stack.mask]
-    mean_intensity = masked_v.mean().item()
-    max_intensity = masked_v.max().item()
-    min_intensity = masked_v.min().item()
-    stack.slices = stack.slices * (output_intensity_mean / mean_intensity)
-    max_intensity = max_intensity * (output_intensity_mean / mean_intensity)
-    min_intensity = min_intensity * (output_intensity_mean / mean_intensity)
-    return stack, max_intensity, min_intensity
+    if masked_v.numel() == 0:
+        logging.warning("Stack mask empty during normalization; skipping scaling")
+        mean_intensity = 1.0
+        max_intensity = stack.slices.max().item()
+        min_intensity = stack.slices.min().item()
+        scale = 1.0
+    else:
+        mean_intensity = masked_v.mean().item()
+        max_intensity = masked_v.max().item()
+        min_intensity = masked_v.min().item()
+        if not np.isfinite(mean_intensity) or abs(mean_intensity) < 1e-6:
+            logging.warning(
+                "Stack mean intensity %.6f is not usable; skipping scaling", mean_intensity
+            )
+            scale = 1.0
+        else:
+            scale = output_intensity_mean / mean_intensity
+    stack.slices = stack.slices * scale
+    max_intensity = max_intensity * scale
+    min_intensity = min_intensity * scale
+    return stack, max_intensity, min_intensity, scale, mean_intensity
 
 
 def slice_to_volume_reconstruction(
@@ -165,10 +180,12 @@ def slice_to_volume_reconstruction(
     no_pixel_robust_statistics: bool = False,
     no_global_exclusion: bool = False,
     no_local_exclusion: bool = False,
+    no_registration: bool = False,
     sample_mask: Optional[PathType] = None,
     sample_orientation: Optional[PathType] = None,
     psf: str = "gaussian",
     device: DeviceType = torch.device("cpu"),
+    normalize_stacks: bool = True,
     **unused
 ) -> Tuple[Volume, List[Slice], List[Slice]]:
     # check data
@@ -227,6 +244,16 @@ def slice_to_volume_reconstruction(
         stack.sms_metadata = [(mb, ao, sc) for mb, ao, sc in zip(mb_factors, acquisition_orders, slice_counts_per_stack)]
         print(f"[SVR][DEBUG] Attached SMS metadata to stack: {stack.sms_metadata}")
     
+    # Check for SMS in multiple ways:
+    # 1. sms_metadata attribute (set above for multi-stack concatenated case)
+    # 2. mb_factor > 1 directly on stack (for single-stack case or if Stack.cat preserved it)
+    has_sms_metadata = (
+        bool(getattr(stack, "sms_metadata", None)) or 
+        (hasattr(stack, 'mb_factor') and stack.mb_factor > 1)
+    )
+    if has_sms_metadata:
+        logging.info("SMS stack detected; disabling robust slice/pixel outlier weighting.")
+
     slices_mask_backup = stack.mask.clone()
 
     # init volume
@@ -241,7 +268,27 @@ def slice_to_volume_reconstruction(
     _save_nifti(volume.image, os.path.join(intermediates_dir, 'initial_mask_volume.nii.gz'))
 
     # data normalization
-    stack, max_intensity, min_intensity = _normalize(stack, output_intensity_mean)
+    if normalize_stacks:
+        stack, max_intensity, min_intensity, scale, mean_intensity = _normalize(
+            stack, output_intensity_mean
+        )
+        intensity_scale_ref = (
+            output_intensity_mean if abs(scale - 1.0) > 1e-6 else mean_intensity
+        )
+    else:
+        masked_v = stack.slices[stack.mask]
+        if masked_v.numel() == 0:
+            logging.warning("Stack mask empty while skipping normalization; using defaults")
+            mean_intensity = 1.0
+            max_intensity = stack.slices.max().item()
+            min_intensity = stack.slices.min().item()
+        else:
+            mean_intensity = masked_v.mean().item()
+            max_intensity = masked_v.max().item()
+            min_intensity = masked_v.min().item()
+        intensity_scale_ref = (
+            mean_intensity if abs(mean_intensity) > 1e-6 else output_intensity_mean
+        )
     _save_nifti(stack.slices, os.path.join(intermediates_dir, 'stack_normalized.nii.gz'))
 
     # define psf
@@ -261,18 +308,21 @@ def slice_to_volume_reconstruction(
         # Save volume at the start of outer iteration
         affine = getattr(volume, 'affine', None)
         _save_nifti(volume.image, os.path.join(recon_dir, f'recon_outer_{i:02d}.nii.gz'), affine)
+
         # slice-to-volume registration
-        if i > 0:  # skip slice-to-volume registration for the first iteration
+        if i > 0 and not no_registration:  # skip slice-to-volume registration for the first iteration
             svr = SliceToVolumeRegistration(
                 num_levels=3,
                 num_steps=5,
                 step_size=2,
-                max_iter=30,
+                max_iter=10,
             )
+            # Pass the actual PSF to the registration for accurate slice simulation
+            svr.psf = psf_tensor
             slices_transform, _ = svr(
                 stack,
                 volume,
-                use_mask=True,
+                use_mask=False,
             )
             stack.transformation = slices_transform
             # Save stack transformation after registration
@@ -287,14 +337,17 @@ def slice_to_volume_reconstruction(
             _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, f'mask_after_global_exclusion_outer_{i:02d}.nii.gz'))
 
         # PSF reconstruction & volume mask
-        volume = psf_reconstruction(
-            stack,
-            volume,
-            update_mask=is_refine_mask,
-            use_mask=not with_background,
-            psf=psf_tensor,
-        )
-        _save_nifti(volume.image, os.path.join(intermediates_dir, f'volume_after_psf_outer_{i:02d}.nii.gz'))
+        # Only rebuild volume from scratch in the first iteration (i==0)
+        # In subsequent iterations, keep the refined volume from the previous iteration
+        if i == 0:
+            volume = psf_reconstruction(
+                stack,
+                volume,
+                update_mask=is_refine_mask,
+                use_mask=not with_background,
+                psf=psf_tensor,
+            )
+            _save_nifti(volume.image, os.path.join(intermediates_dir, f'volume_after_psf_outer_{i:02d}.nii.gz'))
 
         # init EM
         em = EM(max_intensity, min_intensity)
@@ -330,9 +383,19 @@ def slice_to_volume_reconstruction(
                 err.slices,
                 os.path.join(intermediates_dir, f'err_outer_{i:02d}_inner_{j:02d}.nii.gz'),
             )
+            # Determine whether to apply robust statistics (SMS stacks skip by default)
+            pixel_robust_enabled = not no_pixel_robust_statistics and not has_sms_metadata
+            slice_robust_enabled = not no_slice_robust_statistics and not has_sms_metadata
+
             # EM robust statistics
-            if (not no_pixel_robust_statistics) or (not no_slice_robust_statistics):
-                p_voxel, p_slice = em(err, slices_weight, scale, 1)
+            if pixel_robust_enabled or slice_robust_enabled:
+                p_voxel, p_slice = em(
+                    err,
+                    slices_weight,
+                    scale,
+                    1,
+                    disable_slice_updates=not slice_robust_enabled,
+                )
                 _save_nifti(
                     p_voxel,
                     os.path.join(intermediates_dir, f'p_voxel_outer_{i:02d}_inner_{j:02d}.nii.gz'),
@@ -341,11 +404,20 @@ def slice_to_volume_reconstruction(
                     p_slice,
                     os.path.join(intermediates_dir, f'p_slice_outer_{i:02d}_inner_{j:02d}.npy'),
                 )
-                if no_pixel_robust_statistics:  # reset p_voxel
-                    p_voxel = torch.ones_like(stack.slices)
+                if not pixel_robust_enabled:
+                    p_voxel = torch.ones_like(p_voxel)
+                if not slice_robust_enabled:
+                    p_slice = torch.ones_like(p_slice)
+            else:
+                p_voxel = torch.ones_like(stack.slices)
+                p_slice = torch.ones(
+                    stack.slices.shape[0],
+                    device=stack.slices.device,
+                    dtype=stack.slices.dtype,
+                )
             p = p_voxel
-            if not no_slice_robust_statistics:
-                p = p_voxel * p_slice.view(-1, 1, 1, 1)
+            if slice_robust_enabled:
+                p = p * p_slice.view(-1, 1, 1, 1)
             _save_nifti(
                 p,
                 os.path.join(intermediates_dir, f'p_combined_outer_{i:02d}_inner_{j:02d}.nii.gz'),
@@ -366,7 +438,8 @@ def slice_to_volume_reconstruction(
                 p,
                 alpha,
                 beta,
-                delta * output_intensity_mean,
+                delta * intensity_scale_ref,
+                scale,
                 use_mask=not with_background,
                 psf=psf_tensor,
             )
