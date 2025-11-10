@@ -100,7 +100,7 @@ def main():
                     output_file = output_subdir / "svr_recon.nii.gz"
 
                     cmd = [
-                        *PYTHON_CMD,
+                        *PYTHON_CMD,"'",
                         SVR_CLI_PATH,
                         "--input-stacks",
                         *[str(f) for f in selected_files],
@@ -109,7 +109,7 @@ def main():
                         "--segmentation",
                         "threshold",
                         "--segmentation-threshold",
-                        "100",
+                        "100","'"
                     ]
                     # make cmd as a single string for printing
                     cmd = " ".join(f'"{c}"' if " " in c else c for c in cmd)
