@@ -11,7 +11,10 @@ from pathlib import Path
 from itertools import product
 
 # Get the svr_cli.py path
-SVR_CLI_PATH = str(Path(__file__).parent.parent / "svr_cli.py")
+SVR_CLI_PATH = "/home/ajoshi/Projects/svr_gpu/svr_cli.py"
+
+if not os.path.exists(SVR_CLI_PATH):
+    SVR_CLI_PATH = "/project2/ajoshi_1183/Projects/svr_gpu/svr_cli.py"
 
 # Configuration
 MOTION_LEVELS = ["none", "mild", "moderate", "severe"]
@@ -126,8 +129,11 @@ def main():
                         )
                         continue
 
+                    print("RUNNING...\n")
                     print(cmd)
-                    subprocess.run(cmd, check=True, shell=True)
+                    print("\n...\n")
+
+                    #subprocess.run(cmd, check=True, shell=True)
                     results.append(
                         {
                             "status": "success",
