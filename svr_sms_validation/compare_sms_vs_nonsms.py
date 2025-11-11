@@ -71,10 +71,12 @@ def load_and_normalize(path: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         img = nib.load(path)
         data = img.get_fdata().astype(np.float32)
         affine = img.affine
-        # Normalize to 0-1
+        # Also return normalized version for registration
         if data.max() > data.min():
-            data = (data - data.min()) / (data.max() - data.min())
-        return data, affine
+            norm_data = (data - data.min()) / (data.max() - data.min())
+        else:
+            norm_data = data.copy()
+        return data, affine, norm_data
     except Exception as e:
         print(f"Error loading {path}: {e}")
         return None
@@ -83,8 +85,9 @@ def load_and_normalize(path: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
 def rigid_coregister_sitk(moving: np.ndarray, fixed: np.ndarray, 
                           moving_affine: np.ndarray, fixed_affine: np.ndarray,
                           moving_path: Optional[Path] = None,
-                          cache_dir: Optional[Path] = None,
-                          cache_key: Optional[str] = None) -> np.ndarray:
+                          cache_key: Optional[str] = None,
+                          moving_orig: Optional[np.ndarray] = None,
+                          fixed_orig: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Rigidly coregister moving image to fixed image using SimpleITK.
     
@@ -114,9 +117,14 @@ def rigid_coregister_sitk(moving: np.ndarray, fixed: np.ndarray,
             except:
                 pass  # If read fails, recompute
     
-    # Convert numpy arrays to SimpleITK images
+    # Convert numpy arrays to SimpleITK images (normalized for registration)
     moving_img = sitk.GetImageFromArray(moving.astype(np.float32))
     fixed_img = sitk.GetImageFromArray(fixed.astype(np.float32))
+    # For resampling, use original scale image if provided
+    if moving_orig is not None:
+        moving_img_orig = sitk.GetImageFromArray(moving_orig.astype(np.float32))
+    else:
+        moving_img_orig = moving_img
     
     # Set spacing from affine matrices (diagonal elements give voxel sizes)
     moving_spacing = np.abs(np.diag(moving_affine[:3, :3]))
@@ -182,8 +190,8 @@ def rigid_coregister_sitk(moving: np.ndarray, fixed: np.ndarray,
         resampler.SetInterpolator(sitk.sitkLinear)
         resampler.SetDefaultPixelValue(0)
         resampler.SetTransform(final_transform)
-        
-        coregistered_img = resampler.Execute(moving_img)
+        # For saving, use original scale image
+        coregistered_img = resampler.Execute(moving_img_orig)
         coregistered = sitk.GetArrayFromImage(coregistered_img)
         
         # Verify alignment quality - compute NCC between coregistered and fixed
@@ -360,7 +368,7 @@ def scan_reconstructions(output_dir: Path, gt_dir: Path) -> List[ReconResult]:
 
 
 def compute_all_metrics(results: List[ReconResult], enable_coregistration: bool = True,
-                       cache_dir: Optional[Path] = None) -> pd.DataFrame:
+                       ) -> pd.DataFrame:
     """Compute metrics for all reconstructions."""
     records = []
     
@@ -368,8 +376,6 @@ def compute_all_metrics(results: List[ReconResult], enable_coregistration: bool 
     print(f"\nComputing metrics for {total} reconstructions...")
     if enable_coregistration and HAS_SITK:
         print("  Coregistration: ENABLED (SimpleITK rigid alignment to ground truth)")
-        if cache_dir is not None:
-            print(f"  Cache directory: {cache_dir}")
     else:
         print("  Coregistration: DISABLED")
     
@@ -386,16 +392,22 @@ def compute_all_metrics(results: List[ReconResult], enable_coregistration: bool 
         if recon_data is None or gt_data is None:
             continue
         
-        recon, recon_affine = recon_data
-        gt, gt_affine = gt_data
+        recon_orig, recon_affine, recon_norm = recon_data
+        gt_orig, gt_affine, gt_norm = gt_data
         
         # Coregister reconstruction to ground truth
         if enable_coregistration and HAS_SITK:
             # Create unique cache key from result properties
             cache_key = f"{result.gt_name}_motion{result.motion_level}_mb{result.mb_factor}_n{result.n_stacks}_p{result.permutation}"
-            recon = rigid_coregister_sitk(recon, gt, recon_affine, gt_affine,
+            # Use normalized images for registration, but resample original scale
+            recon = rigid_coregister_sitk(recon_norm, gt_norm, recon_affine, gt_affine,
                                          moving_path=result.recon_path,
-                                         cache_dir=cache_dir, cache_key=cache_key)
+                                         cache_key=cache_key,
+                                         moving_orig=recon_orig, fixed_orig=gt_orig)
+            gt = gt_orig
+        else:
+            recon = recon_orig
+            gt = gt_orig
         
         metrics = calculate_metrics(recon, gt)
         
@@ -836,8 +848,6 @@ def main():
         sys.exit(1)
     
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_DIR = RESULTS_DIR / "coregistration_cache"
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     
     # Scan for reconstructions
     print("\nScanning for reconstructions...")
@@ -851,7 +861,7 @@ def main():
         sys.exit(1)
     
     # Compute metrics (with coregistration enabled by default)
-    df = compute_all_metrics(results, enable_coregistration=True, cache_dir=CACHE_DIR)
+    df = compute_all_metrics(results, enable_coregistration=True)
     
     if len(df) == 0:
         print("\nError: No metrics could be computed!")
