@@ -133,17 +133,21 @@ def rigid_coregister_sitk(moving: np.ndarray, fixed: np.ndarray,
     registration_method = sitk.ImageRegistrationMethod()
     # Similarity metric: Normalized Correlation (better for similar intensity distributions)
     registration_method.SetMetricAsCorrelation()
-    registration_method.SetMetricSamplingStrategy(registration_method.NONE)
+    # Use sampling for speed: only ~20% of voxels
+    registration_method.SetMetricSamplingStrategy(registration_method.REGULAR)
+    registration_method.SetMetricSamplingPercentage(0.2)
     registration_method.SetInterpolator(sitk.sitkLinear)
+    # Faster optimizer settings
     registration_method.SetOptimizerAsLBFGSB(
-        gradientConvergenceTolerance=1e-5,
-        numberOfIterations=200,
+        gradientConvergenceTolerance=1e-4,
+        numberOfIterations=100,
         maximumNumberOfCorrections=5,
-        maximumNumberOfFunctionEvaluations=1000,
-        costFunctionConvergenceFactor=1e7
+        maximumNumberOfFunctionEvaluations=500,
+        costFunctionConvergenceFactor=1e6
     )
-    registration_method.SetShrinkFactorsPerLevel(shrinkFactors=[8, 4, 2, 1])
-    registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=[4, 2, 1, 0])
+    # Fewer multi-resolution levels for speed
+    registration_method.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2, 1])
+    registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=[2, 1, 0])
     registration_method.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
     initial_transform = sitk.CenteredTransformInitializer(
         fixed_img_norm,
@@ -166,6 +170,7 @@ def rigid_coregister_sitk(moving: np.ndarray, fixed: np.ndarray,
     coregistered = sitk.GetArrayFromImage(coregistered_img)
     
     # Save coregistered image as NIfTI file
+    # Use fixed_affine (spatial alignment) but with intensities from moving image
     if moving_path is not None:
         coreg_path = Path(str(moving_path).replace('.nii.gz', '_reg.nii.gz'))
         coreg_nifti = nib.Nifti1Image(coregistered, fixed_affine)
