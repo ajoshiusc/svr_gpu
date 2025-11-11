@@ -85,70 +85,56 @@ def load_and_normalize(path: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
 def rigid_coregister_sitk(moving: np.ndarray, fixed: np.ndarray, 
                           moving_affine: np.ndarray, fixed_affine: np.ndarray,
                           moving_path: Optional[Path] = None,
-                          cache_key: Optional[str] = None,
                           moving_orig: Optional[np.ndarray] = None,
                           fixed_orig: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Rigidly coregister moving image to fixed image using SimpleITK.
-    
-    Args:
-        moving: Moving image array
-        fixed: Fixed (reference) image array
-        moving_affine: Affine transformation matrix for moving image
-        fixed_affine: Affine transformation matrix for fixed image
-        moving_path: Path to original moving image (for saving coregistered result)
-        cache_dir: Directory to cache coregistration results
-        cache_key: Unique key for this coregistration (e.g., reconstruction filename)
-    
-    Returns:
-        Coregistered moving image in fixed image space
+    Uses normalized images for registration, original scale for output.
+    If _reg.nii.gz exists, loads cached result instead of recomputing.
     """
     if not HAS_SITK:
-        print("Warning: SimpleITK not available, skipping coregistration")
         return moving
     
     # Check if coregistered file already exists
     if moving_path is not None:
         coreg_path = Path(str(moving_path).replace('.nii.gz', '_reg.nii.gz'))
         if coreg_path.exists():
-            try:
-                img = nib.load(coreg_path)
-                return img.get_fdata().astype(np.float32)
-            except:
-                pass  # If read fails, recompute
+            img = nib.load(coreg_path)
+            return img.get_fdata().astype(np.float32)
     
-    # Convert numpy arrays to SimpleITK images (normalized for registration)
-    moving_img = sitk.GetImageFromArray(moving.astype(np.float32))
-    fixed_img = sitk.GetImageFromArray(fixed.astype(np.float32))
-    # For resampling, use original scale image if provided
+    # Convert numpy arrays to SimpleITK images
+    # Use normalized images ONLY for registration metric computation
+    moving_img_norm = sitk.GetImageFromArray(moving.astype(np.float32))
+    fixed_img_norm = sitk.GetImageFromArray(fixed.astype(np.float32))
+    # For resampling and output, use original scale images
     if moving_orig is not None:
-        moving_img_orig = sitk.GetImageFromArray(moving_orig.astype(np.float32))
+        moving_img = sitk.GetImageFromArray(moving_orig.astype(np.float32))
     else:
-        moving_img_orig = moving_img
+        moving_img = moving_img_norm
+    if fixed_orig is not None:
+        fixed_img = sitk.GetImageFromArray(fixed_orig.astype(np.float32))
+    else:
+        fixed_img = fixed_img_norm
     
     # Set spacing from affine matrices (diagonal elements give voxel sizes)
     moving_spacing = np.abs(np.diag(moving_affine[:3, :3]))
     fixed_spacing = np.abs(np.diag(fixed_affine[:3, :3]))
     moving_img.SetSpacing(moving_spacing.tolist())
     fixed_img.SetSpacing(fixed_spacing.tolist())
-    
+    moving_img_norm.SetSpacing(moving_spacing.tolist())
+    fixed_img_norm.SetSpacing(fixed_spacing.tolist())
     # Set origin from affine matrices
     moving_img.SetOrigin(moving_affine[:3, 3].tolist())
     fixed_img.SetOrigin(fixed_affine[:3, 3].tolist())
+    moving_img_norm.SetOrigin(moving_affine[:3, 3].tolist())
+    fixed_img_norm.SetOrigin(fixed_affine[:3, 3].tolist())
     
-    # Initialize registration
+    # Initialize registration (use normalized images for metric computation only)
     registration_method = sitk.ImageRegistrationMethod()
-    
     # Similarity metric: Normalized Correlation (better for similar intensity distributions)
     registration_method.SetMetricAsCorrelation()
-    
-    # Use all samples for better accuracy
     registration_method.SetMetricSamplingStrategy(registration_method.NONE)
-    
-    # Interpolator
     registration_method.SetInterpolator(sitk.sitkLinear)
-    
-    # Optimizer: Use LBFGSB which is more robust for rigid registration
     registration_method.SetOptimizerAsLBFGSB(
         gradientConvergenceTolerance=1e-5,
         numberOfIterations=200,
@@ -156,117 +142,36 @@ def rigid_coregister_sitk(moving: np.ndarray, fixed: np.ndarray,
         maximumNumberOfFunctionEvaluations=1000,
         costFunctionConvergenceFactor=1e7
     )
-    
-    # Setup for multi-resolution framework with more levels
     registration_method.SetShrinkFactorsPerLevel(shrinkFactors=[8, 4, 2, 1])
     registration_method.SetSmoothingSigmasPerLevel(smoothingSigmas=[4, 2, 1, 0])
     registration_method.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-    
-    # Use 3D Versor transform (better parameterization for rotations than Euler)
     initial_transform = sitk.CenteredTransformInitializer(
-        fixed_img,
-        moving_img,
+        fixed_img_norm,
+        moving_img_norm,
         sitk.VersorRigid3DTransform(),
         sitk.CenteredTransformInitializerFilter.MOMENTS
     )
-    
     registration_method.SetInitialTransform(initial_transform, inPlace=False)
     
-    # Add observer to monitor progress (optional)
-    # registration_method.AddCommand(sitk.sitkIterationEvent, 
-    #                               lambda: print(f"\rMetric: {registration_method.GetMetricValue():.4f}", end=''))
+    # Execute registration on normalized images
+    final_transform = registration_method.Execute(fixed_img_norm, moving_img_norm)
     
-    # Execute registration
-    try:
-        final_transform = registration_method.Execute(fixed_img, moving_img)
-        
-        # Get final metric value to assess quality
-        final_metric = registration_method.GetMetricValue()
-        stop_condition = registration_method.GetOptimizerStopConditionDescription()
-        
-        # Resample moving image with the final transformation
-        resampler = sitk.ResampleImageFilter()
-        resampler.SetReferenceImage(fixed_img)
-        resampler.SetInterpolator(sitk.sitkLinear)
-        resampler.SetDefaultPixelValue(0)
-        resampler.SetTransform(final_transform)
-        # For saving, use original scale image
-        coregistered_img = resampler.Execute(moving_img_orig)
-        coregistered = sitk.GetArrayFromImage(coregistered_img)
-        
-        # Verify alignment quality - compute NCC between coregistered and fixed
-        coreg_flat = coregistered.flatten()
-        fixed_flat = sitk.GetArrayFromImage(fixed_img).flatten()
-        
-        # Mask out zero regions
-        mask = (coreg_flat > 0.01) & (fixed_flat > 0.01)
-        if mask.sum() > 0:
-            c_masked = coreg_flat[mask]
-            f_masked = fixed_flat[mask]
-            c_mean = c_masked.mean()
-            f_mean = f_masked.mean()
-            ncc = np.sum((c_masked - c_mean) * (f_masked - f_mean)) / (
-                np.sqrt(np.sum((c_masked - c_mean)**2) * np.sum((f_masked - f_mean)**2)) + 1e-10
-            )
-        else:
-            ncc = 0.0
-        
-        # If alignment is poor, try with Mutual Information instead
-        if ncc < 0.5:
-            print(f"    Low NCC={ncc:.3f}, retrying with Mutual Information...")
-            
-            # Retry with MI
-            registration_method2 = sitk.ImageRegistrationMethod()
-            registration_method2.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
-            registration_method2.SetMetricSamplingStrategy(registration_method2.REGULAR)
-            registration_method2.SetMetricSamplingPercentage(0.2)
-            registration_method2.SetInterpolator(sitk.sitkLinear)
-            
-            registration_method2.SetOptimizerAsRegularStepGradientDescent(
-                learningRate=2.0,
-                minStep=0.01,
-                numberOfIterations=300,
-                relaxationFactor=0.5
-            )
-            registration_method2.SetOptimizerScalesFromPhysicalShift()
-            
-            registration_method2.SetShrinkFactorsPerLevel(shrinkFactors=[8, 4, 2, 1])
-            registration_method2.SetSmoothingSigmasPerLevel(smoothingSigmas=[4, 2, 1, 0])
-            registration_method2.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-            
-            initial_transform2 = sitk.CenteredTransformInitializer(
-                fixed_img,
-                moving_img,
-                sitk.VersorRigid3DTransform(),
-                sitk.CenteredTransformInitializerFilter.MOMENTS
-            )
-            registration_method2.SetInitialTransform(initial_transform2, inPlace=False)
-            
-            try:
-                final_transform = registration_method2.Execute(fixed_img, moving_img)
-                resampler.SetTransform(final_transform)
-                coregistered_img = resampler.Execute(moving_img)
-                coregistered = sitk.GetArrayFromImage(coregistered_img)
-                print(f"    MI retry completed")
-            except:
-                print(f"    MI retry also failed, using original result")
-        
-        # Save coregistered image as NIfTI file
-        if moving_path is not None:
-            coreg_path = Path(str(moving_path).replace('.nii.gz', '_reg.nii.gz'))
-            try:
-                # Create NIfTI image with fixed affine (since we're in fixed space)
-                coreg_nifti = nib.Nifti1Image(coregistered, fixed_affine)
-                nib.save(coreg_nifti, coreg_path)
-            except Exception as e:
-                print(f"    Warning: Could not save coregistered image: {e}")
-        
-        return coregistered
-        
-    except Exception as e:
-        print(f"    Warning: SimpleITK coregistration failed: {e}")
-        # Return original moving image if registration fails
-        return moving
+    # Resample moving image with the final transformation
+    resampler = sitk.ResampleImageFilter()
+    resampler.SetReferenceImage(fixed_img)
+    resampler.SetInterpolator(sitk.sitkLinear)
+    resampler.SetDefaultPixelValue(0)
+    resampler.SetTransform(final_transform)
+    coregistered_img = resampler.Execute(moving_img)
+    coregistered = sitk.GetArrayFromImage(coregistered_img)
+    
+    # Save coregistered image as NIfTI file
+    if moving_path is not None:
+        coreg_path = Path(str(moving_path).replace('.nii.gz', '_reg.nii.gz'))
+        coreg_nifti = nib.Nifti1Image(coregistered, fixed_affine)
+        nib.save(coreg_nifti, coreg_path)
+    
+    return coregistered
 
 
 def calculate_metrics(recon: np.ndarray, gt: np.ndarray) -> Dict[str, float]:
@@ -397,12 +302,9 @@ def compute_all_metrics(results: List[ReconResult], enable_coregistration: bool 
         
         # Coregister reconstruction to ground truth
         if enable_coregistration and HAS_SITK:
-            # Create unique cache key from result properties
-            cache_key = f"{result.gt_name}_motion{result.motion_level}_mb{result.mb_factor}_n{result.n_stacks}_p{result.permutation}"
             # Use normalized images for registration, but resample original scale
             recon = rigid_coregister_sitk(recon_norm, gt_norm, recon_affine, gt_affine,
                                          moving_path=result.recon_path,
-                                         cache_key=cache_key,
                                          moving_orig=recon_orig, fixed_orig=gt_orig)
             gt = gt_orig
         else:
