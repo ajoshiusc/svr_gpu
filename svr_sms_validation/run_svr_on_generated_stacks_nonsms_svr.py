@@ -135,7 +135,7 @@ def main():
                     print(cmd)
                     print("\n...\n")
 
-                    #subprocess.run(cmd, check=True, shell=True)
+                    subprocess.run(cmd, check=True, shell=True)
                     results.append(
                         {
                             "status": "success",
