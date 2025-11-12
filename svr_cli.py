@@ -256,19 +256,22 @@ def load_stack(
         slices_tensor, mask_tensor, resolutions, affine
     )
 
-    # Try to load SMS metadata from JSON sidecar
+    # SMS metadata handling
     mb_factor = 1
     acquisition_order = None
-    import json
-    json_path = str(path_vol).replace('.nii.gz', '.json').replace('.nii', '.json')
-    if os.path.exists(json_path):
-        try:
-            with open(json_path, 'r') as f:
-                metadata = json.load(f)
-                mb_factor = metadata.get('mb_factor', 1)
-                acquisition_order = metadata.get('acquisition_order', None)
-        except Exception:
-            pass  # Fail silently if JSON can't be loaded
+    
+    # Only load JSON metadata if not explicitly ignored
+    if not getattr(load_stack, '_ignore_sms_metadata', False):
+        import json
+        json_path = str(path_vol).replace('.nii.gz', '.json').replace('.nii', '.json')
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r') as f:
+                    metadata = json.load(f)
+                    mb_factor = metadata.get('mb_factor', 1)
+                    acquisition_order = metadata.get('acquisition_order', None)
+            except Exception:
+                pass  # Fail silently if JSON can't be loaded
 
     return Stack(
         slices=slices_tensor.unsqueeze(1),
@@ -525,10 +528,9 @@ def preprocess_inputs(args: Namespace):
         if args.segmentation and str(args.segmentation).lower() != 'none':
             # Quick pre-check: if most stacks have very few nonzero slices after thresholding, skip segmentation
             try:
-                from standalone_inlined import load_stack
                 num_nonzero_slices = []
                 for p in input_dict['input_stacks']:
-                    img = load_stack(str(p))
+                    img = load_stack(str(p), device=args.device)
                     # img.slices has shape (N,1,H,W)
                     counts = (img.slices.squeeze(1) > 0).view(img.slices.shape[0], -1).any(dim=1).sum().item()
                     num_nonzero_slices.append(counts)
@@ -586,6 +588,12 @@ def run_svr(args: Namespace):
     """
     if not hasattr(args, "no_intensity_normalization"):
         args.no_intensity_normalization = False
+    
+    # Set SMS metadata handling flag
+    load_stack._ignore_sms_metadata = getattr(args, 'ignore_sms_metadata', False)
+    if load_stack._ignore_sms_metadata:
+        logger.info("SMS metadata will be ignored; all stacks treated as sequential (mb_factor=1)")
+    
     # Preprocess inputs (loads, thresholds, masks, segments, corrects bias, assesses, registers)
     logger.info("Preprocessing inputs...")
     input_dict, args = preprocess_inputs(args)
@@ -682,6 +690,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help='Intensity threshold to use for simple threshold segmentation')
     parser.add_argument('--no-auto-reorient', action='store_true',
                         help='Disable automatic reorientation of stacks to axial orientation (slices in XY plane)')
+    parser.add_argument('--ignore-sms-metadata', action='store_true',
+                        help='Ignore SMS metadata in JSON sidecars and treat all stacks as sequential stacks (mb_factor=1)')
     parser.add_argument('--bias-field-correction', action='store_true',
                         help='Apply N4 bias field correction')
     parser.add_argument('--n-proc-n4', type=int, default=1,
