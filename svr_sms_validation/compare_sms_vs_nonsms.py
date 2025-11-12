@@ -327,8 +327,12 @@ def compute_all_metrics(results: List[ReconResult], enable_coregistration: bool 
             'permutation': result.permutation,
             **metrics
         })
+
+    # save records to csv
+    df = pd.DataFrame(records)
+    df.to_csv("metrics_results.csv", index=False)
     
-    return pd.DataFrame(records)
+    return df
 
 
 def create_summary_tables(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
