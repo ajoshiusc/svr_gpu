@@ -330,7 +330,7 @@ def compute_all_metrics(results: List[ReconResult], enable_coregistration: bool 
 
     # save records to csv
     df = pd.DataFrame(records)
-    df.to_csv("metrics_results.csv", index=False)
+    #df.to_csv("tmp_metrics_results.csv", index=False)
     
     return df
 
@@ -760,30 +760,32 @@ def main():
     
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Scan for reconstructions
-    print("\nScanning for reconstructions...")
-    results = scan_reconstructions(OUTPUT_DIR, GT_DIR)
-    print(f"Found {len(results)} reconstruction entries")
-    print(f"  Existing files: {sum(1 for r in results if r.exists)}")
-    print(f"  Missing files: {sum(1 for r in results if not r.exists)}")
-    
-    if not any(r.exists for r in results):
-        print("\nError: No reconstruction files found!")
-        sys.exit(1)
-    
-    # Compute metrics (with coregistration enabled by default)
-    df = compute_all_metrics(results, enable_coregistration=True)
-    
-    if len(df) == 0:
-        print("\nError: No metrics could be computed!")
-        sys.exit(1)
-    
-    print(f"\nSuccessfully computed metrics for {len(df)} reconstructions")
-    
-    # Save raw data
+    # Check if metrics CSV exists; if so, load it and skip scanning/computation
     csv_path = RESULTS_DIR / "metrics_data.csv"
-    df.to_csv(csv_path, index=False)
-    print(f"Raw metrics saved to: {csv_path}")
+    if csv_path.exists():
+        print(f"\nFound existing metrics CSV: {csv_path}\nLoading metrics from CSV...")
+        df = pd.read_csv(csv_path)
+        print(f"Loaded metrics for {len(df)} reconstructions from CSV.")
+    else:
+        # Scan for reconstructions
+        print("\nScanning for reconstructions...")
+        results = scan_reconstructions(OUTPUT_DIR, GT_DIR)
+        print(f"Found {len(results)} reconstruction entries")
+        print(f"  Existing files: {sum(1 for r in results if r.exists)}")
+        print(f"  Missing files: {sum(1 for r in results if not r.exists)}")
+        if not any(r.exists for r in results):
+            print("\nError: No reconstruction files found!")
+            sys.exit(1)
+        # Compute metrics (with coregistration enabled by default)
+        df = compute_all_metrics(results, enable_coregistration=True)
+        if len(df) == 0:
+            print("\nError: No metrics could be computed!")
+            sys.exit(1)
+        print(f"\nSuccessfully computed metrics for {len(df)} reconstructions")
+        # Save raw data
+        df.to_csv(csv_path, index=False)
+        print(f"Raw metrics saved to: {csv_path}")
+    
     
     # Create summary tables
     print("\nGenerating summary tables...")
