@@ -330,7 +330,7 @@ def compute_all_metrics(results: List[ReconResult], enable_coregistration: bool 
 
     # save records to csv
     df = pd.DataFrame(records)
-    #df.to_csv("tmp_metrics_results.csv", index=False)
+    #df.to_csv("tmp_metrics_results_nonsms_svr.csv", index=False)
     
     return df
 
@@ -761,7 +761,7 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     
     # Check if metrics CSV exists; if so, load it and skip scanning/computation
-    csv_path = RESULTS_DIR / "metrics_data.csv"
+    csv_path = RESULTS_DIR / "metrics_data_nonsms_svr.csv"
     if csv_path.exists():
         print(f"\nFound existing metrics CSV: {csv_path}\nLoading metrics from CSV...")
         df = pd.read_csv(csv_path)
@@ -795,7 +795,7 @@ def main():
     tables_dir = RESULTS_DIR / "tables"
     tables_dir.mkdir(exist_ok=True)
     for name, table in tables.items():
-        table.to_csv(tables_dir / f"{name}.csv")
+        table.to_csv(tables_dir / f"{name}_nonsms_svr.csv")
     print(f"Tables saved to: {tables_dir}")
     
     # Create plots
