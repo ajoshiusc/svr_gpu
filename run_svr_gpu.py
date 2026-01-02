@@ -51,6 +51,7 @@ def main():
             "Case-insensitive. Can be specified multiple times."
         ),
     )
+    p.add_argument("--te", type=float, default=None, help="Filter series by Echo Time (TE)")
     args = p.parse_args()
 
     raw_input = Path(args.dicom_dir).expanduser().resolve()
@@ -119,9 +120,19 @@ def main():
         try:
             ds = pydicom.dcmread(str(dcm_files[0]), stop_before_pixels=True)
             desc = getattr(ds, 'SeriesDescription', '')
-            series_info.append({'path': series_dir, 'description': desc, 'num_files': len(dcm_files)})
+            te = getattr(ds, 'EchoTime', None)
+            series_info.append({'path': series_dir, 'description': desc, 'num_files': len(dcm_files), 'te': te})
         except Exception:
             continue
+
+    # Optional manual filtering by TE
+    if args.te is not None:
+        before = len(series_info)
+        series_info = [
+            s for s in series_info
+            if s['te'] is not None and abs(float(s['te']) - args.te) < 1.0
+        ]
+        print(f"Filtered series by TE={args.te}: {len(series_info)} of {before} remain")
 
     # Optional manual filtering by SeriesDescription keyword(s)
     if args.include_series_keyword:
