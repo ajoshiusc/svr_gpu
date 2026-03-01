@@ -331,6 +331,68 @@ def load_mask(path_mask: str, device: torch.device = torch.device("cpu")) -> Vol
 
 
 # ============================================================================
+# INTERLEAVED ACQUISITION SPLITTING
+# ============================================================================
+
+def split_interleaved_stacks(
+    stacks: List[Stack], num_packages: int
+) -> List[Stack]:
+    """
+    Split each stack into interleaved packages (sub-stacks).
+
+    In interleaved MRI acquisition, slices are not acquired sequentially.
+    Instead, each "package" (or "interleave") is acquired as a group — e.g.
+    with 2 packages the scanner acquires slices 0, 2, 4, … then 1, 3, 5, …
+    Because the subject (fetus) can move between packages, SVR benefits from
+    treating each package as an independent stack so that each package gets
+    its own rigid-body motion estimate.
+
+    Args:
+        stacks: Input list of Stack objects.
+        num_packages: Number of interleaved packages per stack.
+            1 = no splitting (sequential acquisition assumed).
+            2 = classic even/odd interleaving (most common).
+            N = N-way interleaving.
+
+    Returns:
+        A new list of Stack objects with len = len(stacks) * num_packages.
+        The order is: [stack0_pkg0, stack0_pkg1, …, stack1_pkg0, …].
+    """
+    if num_packages <= 1:
+        return stacks
+
+    split_stacks: List[Stack] = []
+    for stack in stacks:
+        n_slices = stack.slices.shape[0]
+        for pkg in range(num_packages):
+            indices = list(range(pkg, n_slices, num_packages))
+            if len(indices) == 0:
+                logger.warning(
+                    "Stack '%s': package %d has 0 slices (n_slices=%d, "
+                    "num_packages=%d) — skipping.",
+                    stack.name, pkg, n_slices, num_packages,
+                )
+                continue
+            # Use get_substack with a list of indices (fancy indexing)
+            sub = stack.get_substack(indices)
+            sub.name = f"{stack.name}__pkg{pkg}"
+            # The inter-slice gap within a package is wider by the package
+            # factor because we only keep every Nth slice.  Thickness (the
+            # physical extent of a single slice) stays the same.
+            sub.gap = stack.gap * num_packages
+            split_stacks.append(sub)
+            logger.info(
+                "  Split '%s' → package %d/%d with %d slices",
+                stack.name, pkg, num_packages - 1, len(indices),
+            )
+    logger.info(
+        "Interleaved splitting: %d stacks → %d sub-stacks (%d packages each)",
+        len(stacks), len(split_stacks), num_packages,
+    )
+    return split_stacks
+
+
+# ============================================================================
 # INLINED PREPROCESSING FUNCTIONS (from nesvor_extracted.preprocessing.masking)
 # ============================================================================
 
@@ -458,6 +520,15 @@ def load_inputs(args: Namespace) -> Tuple[Dict, Namespace]:
             for stack in input_stacks:
                 stack.apply_volume_mask(volume_mask)
         
+        # Interleaved package splitting (if requested)
+        num_packages = getattr(args, 'num_packages', 1)
+        if num_packages > 1:
+            logger.info(
+                "Splitting %d stacks into %d interleaved packages each",
+                len(input_stacks), num_packages,
+            )
+            input_stacks = split_interleaved_stacks(input_stacks, num_packages)
+
         input_dict["input_stacks"] = input_stacks
         input_dict["volume_mask"] = volume_mask
         
@@ -692,6 +763,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help='Disable automatic reorientation of stacks to axial orientation (slices in XY plane)')
     parser.add_argument('--ignore-sms-metadata', action='store_true',
                         help='Ignore SMS metadata in JSON sidecars and treat all stacks as sequential stacks (mb_factor=1)')
+    parser.add_argument('--num-packages', type=int, default=1,
+                        help='Number of interleaved packages per stack. '
+                             'In interleaved acquisition, slices are acquired '
+                             'in N groups (e.g. even slices then odd slices for '
+                             'N=2). Setting N>1 splits each input stack into N '
+                             'sub-stacks so SVR can estimate separate motion '
+                             'for each package. '
+                             '1 = no splitting (default), 2 = even/odd interleaving.')
     parser.add_argument('--bias-field-correction', action='store_true',
                         help='Apply N4 bias field correction')
     parser.add_argument('--n-proc-n4', type=int, default=1,

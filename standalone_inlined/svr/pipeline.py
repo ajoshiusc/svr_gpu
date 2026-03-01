@@ -466,6 +466,17 @@ def slice_to_volume_reconstruction(
             # scale
             scale = slices_scale(stack, slices_sim, slices_weight, p_voxel, True)
             _save_numpy(scale, os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_03_scale_factors.npy'))
+            
+            # SVRTK-style scale-based exclusion: exclude slices with unrealistic scales
+            # This catches misregistered slices that would otherwise corrupt the reconstruction
+            scale_excluded = (scale < 0.2) | (scale > 5.0)
+            num_scale_excluded = scale_excluded.sum().item()
+            if num_scale_excluded > 0:
+                logging.info(
+                    "Scale-based exclusion: %d/%d slices have unrealistic scale (outside [0.2, 5])",
+                    num_scale_excluded, len(scale)
+                )
+            
             # err
             err = simulated_error(stack, slices_sim, scale)
             _save_nifti(
@@ -504,6 +515,11 @@ def slice_to_volume_reconstruction(
                     device=stack.slices.device,
                     dtype=stack.slices.dtype,
                 )
+            
+            # Apply SVRTK-style scale-based exclusion to p_slice
+            # Slices with unrealistic scales (outside [0.2, 5]) get weight 0
+            p_slice = p_slice * (~scale_excluded).float()
+            
             p = p_voxel
             if slice_robust_enabled:
                 p = p * p_slice.view(-1, 1, 1, 1)

@@ -156,8 +156,7 @@ def voxel_outlier_update(
     p = gc / (gc + (1 - c) * m + 1e-10)
     # Check for NaN/Inf and replace with ones (assume inlier if uncertain)
     p = torch.where(torch.isfinite(p), p, torch.ones_like(p))
-    # Clamp to prevent overly aggressive voxel rejection (minimum 20% contribution)
-    p = torch.clamp(p, min=0.2, max=1.0)
+    # No clamping - consistent with SVRTK behavior
     return p
 
 
@@ -284,20 +283,22 @@ def slice_outlier_update(
         p = c * g_in / (c * g_in + (1 - c) * g_out + 1e-10)
         # Check for NaN/Inf
         p = torch.where(torch.isfinite(p), p, torch.ones_like(p))
-        # Clamp very small probabilities to avoid overly aggressive slice rejection (minimum 30% contribution)
-        p = torch.clamp(p, min=0.3, max=1.0)
+        # No clamping - consistent with SVRTK behavior
 
     c = p.mean()
-    # Log if too many slices are being rejected
-    low_prob_count = (p < 0.1).sum().item()
-    if low_prob_count > len(p) * 0.5:
-        logging.warning("More than 50%% of slices have low probability (<%d out of %d), this may indicate overly aggressive outlier detection", low_prob_count, len(p))
-    logging.debug("N_in = %d, mu_in = %f, mu_out = %f, c=%f, low_prob_slices=%d/%d", N_in, mu_in, mu_out, c, low_prob_count, len(p))
+    # Log slice rejection statistics (informational only)
+    low_prob_count = (p < 0.5).sum().item()  # SVRTK threshold for inclusion
+    logging.debug("N_in = %d, mu_in = %f, mu_out = %f, c=%f, low_weight_slices=%d/%d", N_in, mu_in, mu_out, c, low_prob_count, len(p))
 
     return c, p
 
 
 def global_ncc_exclusion(stack: Stack, volume: Volume, threshold) -> torch.Tensor:
+    """Global NCC-based slice exclusion, consistent with SVRTK behavior.
+    
+    SVRTK does NOT cap the percentage of excluded slices - it trusts the threshold.
+    Only safety check: if ALL slices would be excluded, reset to include all.
+    """
     ncc = -ncc_loss(
         cast(Stack, simulate_slices(stack, volume, True, True)[0]).slices,
         stack.slices,
@@ -309,28 +310,18 @@ def global_ncc_exclusion(stack: Stack, volume: Volume, threshold) -> torch.Tenso
     num_excluded = torch.count_nonzero(excluded).item()
     total_slices = excluded.shape[0]
     
-    # Safety check: don't exclude too many slices (max 50%)
-    if num_excluded > total_slices * 0.5:
-        logging.warning(
-            "Global NCC exclusion would exclude %d/%d slices (>50%%). "
-            "Using adaptive threshold instead to keep 50%% of slices.",
-            num_excluded, total_slices
-        )
-        # Sort NCC values and find threshold that keeps top 50%
-        ncc_sorted, _ = torch.sort(ncc, descending=True)
-        adaptive_threshold = ncc_sorted[total_slices // 2].item()
-        excluded = ncc < adaptive_threshold
-        num_excluded = torch.count_nonzero(excluded).item()
-    
+    # SVRTK behavior: no percentage cap, only prevent excluding ALL slices
     if num_excluded == total_slices:
-        logging.warning("All slices excluded according to global NCC. Reset.")
+        logging.warning("All slices excluded according to global NCC (threshold=%f). Reset.", threshold)
         excluded = torch.zeros_like(excluded)
         num_excluded = 0
     
     logging.info(
-        "global structural exlusion: mean ncc = %f, num_excluded = %d, mean ncc after exclusion = %f",
+        "global structural exlusion: mean ncc = %f, num_excluded = %d/%d (%.1f%%), mean ncc after exclusion = %f",
         ncc.mean().item(),
         num_excluded,
+        total_slices,
+        100.0 * num_excluded / total_slices,
         ncc[~excluded].mean().item() if num_excluded < total_slices else ncc.mean().item(),
     )
     return excluded
