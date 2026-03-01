@@ -20,6 +20,14 @@ from ..inr.data import PointDataset
 import inspect
 import torch.nn.functional as F
 
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # non-interactive backend
+    import matplotlib.pyplot as plt
+    _HAS_MATPLOTLIB = True
+except ImportError:
+    _HAS_MATPLOTLIB = False
+
 
 def _to_numpy(data: torch.Tensor) -> np.ndarray:
     if isinstance(data, torch.Tensor):
@@ -46,6 +54,78 @@ def _save_numpy(data: torch.Tensor, path: str) -> None:
         logging.info("Saved intermediate %s", path)
     except Exception:
         logging.debug("Failed to save intermediate %s", path, exc_info=True)
+
+
+def _save_volume_png(data: torch.Tensor, path: str, title: str = "", cmap: str = "gray") -> None:
+    """Save a 3-plane orthogonal screenshot of a 3D volume as a PNG."""
+    if not _HAS_MATPLOTLIB:
+        return
+    try:
+        arr = _to_numpy(data)
+        # Squeeze to 3D
+        while arr.ndim > 3:
+            arr = arr.squeeze(0) if arr.shape[0] == 1 else arr.squeeze(-1)
+        if arr.ndim != 3:
+            return
+        D, H, W = arr.shape
+        mid_d, mid_h, mid_w = D // 2, H // 2, W // 2
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        axes[0].imshow(arr[mid_d, :, :], cmap=cmap, origin='lower', aspect='equal')
+        axes[0].set_title(f'Axial (z={mid_d})')
+        axes[0].axis('off')
+        axes[1].imshow(arr[:, mid_h, :], cmap=cmap, origin='lower', aspect='equal')
+        axes[1].set_title(f'Coronal (y={mid_h})')
+        axes[1].axis('off')
+        axes[2].imshow(arr[:, :, mid_w], cmap=cmap, origin='lower', aspect='equal')
+        axes[2].set_title(f'Sagittal (x={mid_w})')
+        axes[2].axis('off')
+        if title:
+            fig.suptitle(title, fontsize=14, fontweight='bold')
+        fig.tight_layout()
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        logging.info("Saved PNG screenshot %s", path)
+    except Exception:
+        logging.debug("Failed to save PNG screenshot %s", path, exc_info=True)
+
+
+def _save_stack_png(data: torch.Tensor, path: str, title: str = "", cmap: str = "gray", max_slices: int = 16) -> None:
+    """Save a montage of slices from a 4D stack (N,1,H,W) as a PNG."""
+    if not _HAS_MATPLOTLIB:
+        return
+    try:
+        arr = _to_numpy(data)
+        if arr.ndim == 4 and arr.shape[1] == 1:
+            arr = arr[:, 0, :, :]  # (N, H, W)
+        if arr.ndim != 3:
+            return
+        N = arr.shape[0]
+        # Sample evenly spaced slices if too many
+        if N > max_slices:
+            indices = np.linspace(0, N - 1, max_slices, dtype=int)
+            arr = arr[indices]
+            N = max_slices
+        ncols = min(4, N)
+        nrows = int(np.ceil(N / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+        if nrows == 1 and ncols == 1:
+            axes = np.array([axes])
+        axes = np.atleast_2d(axes)
+        for idx in range(nrows * ncols):
+            r, c = divmod(idx, ncols)
+            ax = axes[r, c]
+            if idx < N:
+                ax.imshow(arr[idx], cmap=cmap, origin='lower', aspect='equal')
+                ax.set_title(f'Slice {idx}', fontsize=9)
+            ax.axis('off')
+        if title:
+            fig.suptitle(title, fontsize=14, fontweight='bold')
+        fig.tight_layout()
+        fig.savefig(path, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+        logging.info("Saved PNG screenshot %s", path)
+    except Exception:
+        logging.debug("Failed to save PNG screenshot %s", path, exc_info=True)
 
 
 def _ensure_dir(path: str) -> str:
@@ -206,9 +286,12 @@ def slice_to_volume_reconstruction(
     intermediates_dir = _ensure_dir(os.path.join(svr_tmp, 'intermediates'))
     recon_dir = _ensure_dir(os.path.join(svr_tmp, 'reconstructions'))
     transforms_dir = _ensure_dir(os.path.join(svr_tmp, 'svr'))
+    png_dir = _ensure_dir(os.path.join(intermediates_dir, 'png'))
 
-    _save_nifti(stack.slices, os.path.join(intermediates_dir, 'stack_preprocessed.nii.gz'))
-    _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, 'stack_preprocessed_mask.nii.gz'))
+    _save_nifti(stack.slices, os.path.join(intermediates_dir, '00_input_stack.nii.gz'))
+    _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, '00_input_mask.nii.gz'))
+    _save_stack_png(stack.slices, os.path.join(png_dir, '00_input_stack.png'), title='Input Stack (preprocessed)')
+    _save_stack_png(stack.mask.float(), os.path.join(png_dir, '00_input_mask.png'), title='Input Mask')
     
     # Extract SMS metadata from input slices if they came from SMS stacks
     # Each slice may have stack_metadata attached during registration
@@ -265,7 +348,8 @@ def slice_to_volume_reconstruction(
         device,
     )
     # Save initial mask/volume
-    _save_nifti(volume.image, os.path.join(intermediates_dir, 'initial_mask_volume.nii.gz'))
+    _save_nifti(volume.image, os.path.join(intermediates_dir, '01_initial_volume_mask.nii.gz'))
+    _save_volume_png(volume.image, os.path.join(png_dir, '01_initial_volume_mask.png'), title='Initial Volume Mask')
 
     # data normalization
     if normalize_stacks:
@@ -289,7 +373,8 @@ def slice_to_volume_reconstruction(
         intensity_scale_ref = (
             mean_intensity if abs(mean_intensity) > 1e-6 else output_intensity_mean
         )
-    _save_nifti(stack.slices, os.path.join(intermediates_dir, 'stack_normalized.nii.gz'))
+    _save_nifti(stack.slices, os.path.join(intermediates_dir, '02_normalized_stack.nii.gz'))
+    _save_stack_png(stack.slices, os.path.join(png_dir, '02_normalized_stack.png'), title='Normalized Stack')
 
     # define psf
     psf_tensor = get_PSF(
@@ -301,13 +386,15 @@ def slice_to_volume_reconstruction(
         device=volume.device,
         psf_type=psf,
     )
-    _save_numpy(psf_tensor, os.path.join(intermediates_dir, 'psf_tensor.npy'))
+    _save_numpy(psf_tensor, os.path.join(intermediates_dir, '03_psf_kernel.npy'))
+    _save_volume_png(psf_tensor, os.path.join(png_dir, '03_psf_kernel.png'), title='PSF Kernel', cmap='hot')
 
     for i in range(n_iter):
         logging.info("outer %d", i)
         # Save volume at the start of outer iteration
         affine = getattr(volume, 'affine', None)
-        _save_nifti(volume.image, os.path.join(recon_dir, f'recon_outer_{i:02d}.nii.gz'), affine)
+        _save_nifti(volume.image, os.path.join(recon_dir, f'outer{i:02d}_00_volume_start.nii.gz'), affine)
+        _save_volume_png(volume.image, os.path.join(png_dir, f'outer{i:02d}_00_volume_start.png'), title=f'Volume at Start of Outer Iter {i}')
 
         # slice-to-volume registration
         if i > 0 and not no_registration:  # skip slice-to-volume registration for the first iteration
@@ -326,7 +413,7 @@ def slice_to_volume_reconstruction(
             )
             stack.transformation = slices_transform
             # Save stack transformation after registration
-            _save_numpy(stack.transformation.matrix(), os.path.join(intermediates_dir, f'stack_transform_outer_{i:02d}.npy'))
+            _save_numpy(stack.transformation.matrix(), os.path.join(intermediates_dir, f'outer{i:02d}_01_transforms_after_registration.npy'))
 
         # global structual exclusion
         if i > 0 and not no_global_exclusion:
@@ -334,7 +421,8 @@ def slice_to_volume_reconstruction(
             excluded = global_ncc_exclusion(stack, volume, global_ncc_threshold)
             stack.mask[excluded] = False
             # Save mask after global exclusion
-            _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, f'mask_after_global_exclusion_outer_{i:02d}.nii.gz'))
+            _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, f'outer{i:02d}_02_mask_after_ncc_exclusion.nii.gz'))
+            _save_stack_png(stack.mask.float(), os.path.join(png_dir, f'outer{i:02d}_02_mask_after_ncc_exclusion.png'), title=f'Mask After Global NCC Exclusion (Outer {i})')
 
         # PSF reconstruction & volume mask
         # Only rebuild volume from scratch in the first iteration (i==0)
@@ -347,7 +435,8 @@ def slice_to_volume_reconstruction(
                 use_mask=not with_background,
                 psf=psf_tensor,
             )
-            _save_nifti(volume.image, os.path.join(intermediates_dir, f'volume_after_psf_outer_{i:02d}.nii.gz'))
+            _save_nifti(volume.image, os.path.join(intermediates_dir, f'outer{i:02d}_03_volume_after_psf_init.nii.gz'))
+            _save_volume_png(volume.image, os.path.join(png_dir, f'outer{i:02d}_03_volume_after_psf_init.png'), title=f'Volume After PSF Init (Outer {i})')
 
         # init EM
         em = EM(max_intensity, min_intensity)
@@ -368,20 +457,20 @@ def slice_to_volume_reconstruction(
             )
             _save_nifti(
                 slices_sim.slices,
-                os.path.join(intermediates_dir, f'slices_sim_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_01_simulated_slices.nii.gz'),
             )
             _save_nifti(
                 slices_weight.slices,
-                os.path.join(intermediates_dir, f'slices_weight_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_02_slice_weights.nii.gz'),
             )
             # scale
             scale = slices_scale(stack, slices_sim, slices_weight, p_voxel, True)
-            _save_numpy(scale, os.path.join(intermediates_dir, f'scale_outer_{i:02d}_inner_{j:02d}.npy'))
+            _save_numpy(scale, os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_03_scale_factors.npy'))
             # err
             err = simulated_error(stack, slices_sim, scale)
             _save_nifti(
                 err.slices,
-                os.path.join(intermediates_dir, f'err_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_04_residual_error.nii.gz'),
             )
             # Determine whether to apply robust statistics (SMS stacks skip by default)
             pixel_robust_enabled = not no_pixel_robust_statistics and not has_sms_metadata
@@ -398,11 +487,11 @@ def slice_to_volume_reconstruction(
                 )
                 _save_nifti(
                     p_voxel,
-                    os.path.join(intermediates_dir, f'p_voxel_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                    os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_05_voxel_confidence.nii.gz'),
                 )
                 _save_numpy(
                     p_slice,
-                    os.path.join(intermediates_dir, f'p_slice_outer_{i:02d}_inner_{j:02d}.npy'),
+                    os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_06_slice_confidence.npy'),
                 )
                 if not pixel_robust_enabled:
                     p_voxel = torch.ones_like(p_voxel)
@@ -420,14 +509,14 @@ def slice_to_volume_reconstruction(
                 p = p * p_slice.view(-1, 1, 1, 1)
             _save_nifti(
                 p,
-                os.path.join(intermediates_dir, f'p_combined_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_07_combined_confidence.nii.gz'),
             )
             # local structural exclusion
             if not no_local_exclusion:
                 p = p * local_ssim_exclusion(stack, slices_sim, local_ssim_threshold)
                 _save_nifti(
                     p,
-                    os.path.join(intermediates_dir, f'p_after_local_exclusion_outer_{i:02d}_inner_{j:02d}.nii.gz'),
+                    os.path.join(intermediates_dir, f'outer{i:02d}_inner{j:02d}_08_confidence_after_ssim.nii.gz'),
                 )
             # super-resolution update
             beta = max(0.01, 0.08 / (2**i))
@@ -445,14 +534,31 @@ def slice_to_volume_reconstruction(
             )
             # Save volume after inner iteration
             affine = getattr(volume, 'affine', None)
-            _save_nifti(volume.image, os.path.join(recon_dir, f'recon_outer_{i:02d}_inner_{j:02d}.nii.gz'), affine)
+            _save_nifti(volume.image, os.path.join(recon_dir, f'outer{i:02d}_inner{j:02d}_09_reconstructed_volume.nii.gz'), affine)
+            # Save PNG for first and last inner iteration per outer
+            is_first_inner = (j == 0)
+            is_last_inner = (j == n_iter_rec[i] - 1)
+            if is_first_inner or is_last_inner:
+                _save_volume_png(
+                    volume.image,
+                    os.path.join(png_dir, f'outer{i:02d}_inner{j:02d}_09_reconstructed_volume.png'),
+                    title=f'Reconstructed Volume (Outer {i}, Inner {j})',
+                )
+                _save_stack_png(
+                    err.slices,
+                    os.path.join(png_dir, f'outer{i:02d}_inner{j:02d}_04_residual_error.png'),
+                    title=f'Residual Error (Outer {i}, Inner {j})',
+                    cmap='RdBu_r',
+                )
 
     # reconstruction finished
     # Save final transforms after SVR completes
-    _save_numpy(stack.transformation.matrix(), os.path.join(transforms_dir, 'transforms_svr_final.npy'))
-    _save_nifti(volume.image, os.path.join(intermediates_dir, 'volume_final.nii.gz'))
-    _save_nifti(volume.mask.float(), os.path.join(intermediates_dir, 'volume_mask_final.nii.gz'))
-    
+    _save_numpy(stack.transformation.matrix(), os.path.join(transforms_dir, 'final_transforms.npy'))
+    _save_nifti(volume.image, os.path.join(intermediates_dir, 'final_volume.nii.gz'))
+    _save_nifti(volume.mask.float(), os.path.join(intermediates_dir, 'final_mask.nii.gz'))
+    _save_volume_png(volume.image, os.path.join(png_dir, 'final_volume.png'), title='Final Reconstructed Volume')
+    _save_volume_png(volume.mask.float(), os.path.join(png_dir, 'final_mask.png'), title='Final Volume Mask')
+
     # prepare outputs
     slices_sim = cast(
         Stack,
