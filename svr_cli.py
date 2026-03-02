@@ -576,6 +576,81 @@ def save_outputs(data: Dict, args: Namespace) -> None:
         save_nii_volume(args.output_volume, volume_data, affine)
         logger.info(f"Saved output volume to {args.output_volume}")
 
+        # Save uncertainty volume if available
+        uncertainty_volume = data.get("uncertainty_volume")
+        if uncertainty_volume is not None:
+            # Build uncertainty output path next to the main output
+            out_dir = os.path.dirname(os.path.abspath(args.output_volume))
+            out_base = os.path.basename(args.output_volume)
+            # Strip .nii.gz or .nii
+            if out_base.endswith('.nii.gz'):
+                stem = out_base[:-7]
+            elif out_base.endswith('.nii'):
+                stem = out_base[:-4]
+            else:
+                stem = out_base
+            unc_path = os.path.join(out_dir, f'{stem}_uncertainty.nii.gz')
+            unc_png_path = os.path.join(out_dir, f'{stem}_uncertainty_overlay.png')
+
+            # Apply same scale factor to uncertainty
+            unc_data = uncertainty_volume.image * scale_factor
+            if not getattr(args, "with_background", False):
+                unc_data = unc_data * output_volume.mask.to(unc_data.dtype)
+
+            save_nii_volume(unc_path, unc_data, affine)
+            logger.info(f"Saved uncertainty volume to {unc_path}")
+
+        # Save coverage volumes if available
+        coverage_vol = data.get("coverage_volume")
+        weighted_cov_vol = data.get("weighted_coverage_volume")
+        if coverage_vol is not None:
+            out_dir = os.path.dirname(os.path.abspath(args.output_volume))
+            out_base = os.path.basename(args.output_volume)
+            if out_base.endswith('.nii.gz'):
+                stem = out_base[:-7]
+            elif out_base.endswith('.nii'):
+                stem = out_base[:-4]
+            else:
+                stem = out_base
+
+            cov_path = os.path.join(out_dir, f'{stem}_coverage_stack_count.nii.gz')
+            save_nii_volume(cov_path, coverage_vol.image, affine)
+            logger.info(f"Saved coverage stack-count volume to {cov_path}")
+
+            if weighted_cov_vol is not None:
+                wcov_path = os.path.join(out_dir, f'{stem}_coverage_weighted.nii.gz')
+                save_nii_volume(wcov_path, weighted_cov_vol.image, affine)
+                logger.info(f"Saved weighted coverage volume to {wcov_path}")
+
+        # Generate combined summary PNG (volume + optional uncertainty + optional coverage)
+        try:
+            from standalone_inlined.svr.pipeline import _save_summary_png
+            out_dir = os.path.dirname(os.path.abspath(args.output_volume))
+            out_base = os.path.basename(args.output_volume)
+            if out_base.endswith('.nii.gz'):
+                stem = out_base[:-7]
+            elif out_base.endswith('.nii'):
+                stem = out_base[:-4]
+            else:
+                stem = out_base
+            summary_png_path = os.path.join(out_dir, f'{stem}_summary.png')
+
+            unc_for_png = None
+            if uncertainty_volume is not None:
+                unc_for_png = unc_data  # already scaled
+            cov_for_png = coverage_vol.image if coverage_vol is not None else None
+            wcov_for_png = weighted_cov_vol.image if weighted_cov_vol is not None else None
+
+            _save_summary_png(
+                volume_data, output_volume.mask, summary_png_path,
+                uncertainty_data=unc_for_png,
+                coverage_count=cov_for_png,
+                coverage_weighted=wcov_for_png,
+            )
+            logger.info(f"Saved summary PNG to {summary_png_path}")
+        except Exception:
+            logger.debug("Failed to save summary PNG", exc_info=True)
+
 
 # ============================================================================
 # PREPROCESSING PIPELINE
@@ -672,7 +747,7 @@ def run_svr(args: Namespace):
     # Run SVR reconstruction (exact NeSVoR implementation)
     logger.info("Running SVR reconstruction...")
     try:
-        output_volume, output_slices, mask = slice_to_volume_reconstruction(
+        output_volume, output_slices, mask, uncertainty_volume, coverage_volume, weighted_coverage_volume = slice_to_volume_reconstruction(
             slices=input_dict["input_slices"],
             sample_mask=input_dict.get("volume_mask", None),
             with_background=args.with_background,
@@ -691,11 +766,12 @@ def run_svr(args: Namespace):
             psf=args.psf,
             device=args.device,
             normalize_stacks=not args.no_intensity_normalization,
+            estimate_uncertainty=getattr(args, 'estimate_uncertainty', False),
         )
     except TypeError as e:
         logger.warning("SVR EM outlier error detected; retrying without segmentation. Error: %s", e)
         # Retry with segmentation disabled
-        output_volume, output_slices, mask = slice_to_volume_reconstruction(
+        output_volume, output_slices, mask, uncertainty_volume, coverage_volume, weighted_coverage_volume = slice_to_volume_reconstruction(
             slices=input_dict["input_slices"],
             sample_mask=None,
             with_background=args.with_background,
@@ -714,6 +790,7 @@ def run_svr(args: Namespace):
             psf=args.psf,
             device=args.device,
             normalize_stacks=not args.no_intensity_normalization,
+            estimate_uncertainty=getattr(args, 'estimate_uncertainty', False),
         )
     
     # Save outputs
@@ -721,6 +798,9 @@ def run_svr(args: Namespace):
     output_data = {
         "output_volume": output_volume,
         "mask": mask,
+        "uncertainty_volume": uncertainty_volume,
+        "coverage_volume": coverage_volume,
+        "weighted_coverage_volume": weighted_coverage_volume,
     }
     save_outputs(output_data, args)
     
@@ -875,6 +955,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--no-local-exclusion",
         action="store_true",
         help="Disable local structural exclusion (SSIM-based pixel rejection)",
+    )
+
+    # Uncertainty estimation
+    parser.add_argument(
+        "--estimate-uncertainty",
+        action="store_true",
+        help="Estimate voxel-wise uncertainty via quantile regression with pinball loss. "
+             "Runs three quantile reconstructions (τ=0.1, 0.5, 0.9) after the main SVR loop. "
+             "The middle quantile (τ=0.5) becomes the SVR output; the gap between upper and "
+             "lower quantiles is saved as *_uncertainty.nii.gz with a PNG overlay.",
     )
 
     return parser

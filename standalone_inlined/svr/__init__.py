@@ -8,6 +8,8 @@ from .reconstruction import (
     psf_reconstruction,
     SRR_CG,
     srr_update,
+    srr_update_quantile,
+    pinball_weights,
     simulate_slices,
     slices_scale,
     simulated_error,

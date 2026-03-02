@@ -463,3 +463,158 @@ def slices_scale(
 def simulated_error(stack: Stack, slices_sim: Stack, scale: torch.Tensor) -> Stack:
     err = stack.slices * scale.view(-1, 1, 1, 1) - slices_sim.slices
     return Stack.like(stack, slices=err, deep=False)
+
+
+def pinball_weights(
+    err: torch.Tensor,
+    tau: float,
+) -> torch.Tensor:
+    """Compute pinball (quantile) loss weights for asymmetric residual weighting.
+
+    For quantile τ:
+      - Where residual > 0 (reconstruction under-estimates data): weight = τ
+      - Where residual ≤ 0 (reconstruction over-estimates data): weight = (1 - τ)
+
+    This biases the reconstruction toward the τ-th quantile of the
+    residual distribution.
+
+    Args:
+        err: Residual tensor (observed - simulated). Positive means the
+             reconstruction is below the data.
+        tau: Quantile level in (0, 1). 0.5 = median (symmetric).
+
+    Returns:
+        Weight tensor, same shape as err, values in {tau, 1-tau}.
+    """
+    w = torch.where(err > 0, tau, 1.0 - tau)
+    return w
+
+
+def srr_update_quantile(
+    e: Stack,
+    v: Volume,
+    p: Optional[Union[Stack, torch.Tensor]],
+    alpha: float,
+    beta: float,
+    delta: float,
+    scale: torch.Tensor,
+    tau: float = 0.5,
+    use_mask: bool = False,
+    psf: Optional[torch.Tensor] = None,
+) -> Volume:
+    """SRR update with pinball-loss subgradient for quantile regression.
+
+    Uses the true subgradient of the pinball (quantile) loss:
+        +τ       where err > 0  (data > simulated → push volume up)
+        -(1-τ)   where err ≤ 0  (data < simulated → push volume down)
+
+    The subgradient is constant-magnitude (sign-based), scaled by the mean
+    absolute residual so the update magnitude matches the standard L2 SRR.
+    Normalization uses the plain confidence map ``p`` (coverage), not
+    weighted by pinball coefficients.
+    """
+    err = e.slices
+    volume = v.image[None, None]
+
+    # Pinball loss subgradient: constant magnitude, sign-dependent
+    subgrad = torch.where(
+        err > 0,
+        torch.tensor(tau, device=err.device, dtype=err.dtype),
+        torch.tensor(-(1.0 - tau), device=err.device, dtype=err.dtype),
+    )
+    # Scale by mean |residual| so update magnitude is comparable to L2 SRR
+    err_mag = err.abs().mean().clamp(min=1e-6)
+    signal = subgrad * err_mag
+
+    if p is not None:
+        if isinstance(p, Stack):
+            p = p.slices
+        signal = p * signal
+
+    transforms, res_s, res_r, s_thick, psf = _parse_stack_volume(e, v, psf)
+    is_sms = _is_sms_stack(e)
+
+    g = slice_acquisition_adjoint(
+        transforms,
+        psf,
+        signal,
+        e.mask if use_mask else None,
+        v.mask[None, None] if use_mask else None,
+        v.shape,
+        res_s / res_r,
+        False,
+        False,
+    )
+
+    # Normalise by plain confidence/coverage map (NOT by pinball weights)
+    if p is not None:
+        cmap = slice_acquisition_adjoint(
+            transforms,
+            psf,
+            p,
+            e.mask if use_mask else None,
+            v.mask[None, None] if use_mask else None,
+            v.shape,
+            res_s / res_r,
+            False,
+            False,
+        )
+        if is_sms:
+            cmap_mask = cmap > 1e-10
+            g[cmap_mask] /= cmap[cmap_mask]
+            g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+        else:
+            cmap_mask = cmap > 0
+            g[cmap_mask] /= cmap[cmap_mask]
+    else:
+        cmap_mask = None
+
+    if is_sms:
+        g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+
+    reconstructed = F.relu(volume + alpha * g, True)
+
+    # Edge-preserving regularisation (same as srr_update)
+    g = torch.zeros_like(volume)
+    D, H, W = volume.shape[-3:]
+    v0 = volume[:, :, 1 : D - 1, 1 : H - 1, 1 : W - 1]
+    r0 = reconstructed[:, :, 1 : D - 1, 1 : H - 1, 1 : W - 1]
+    scaled_delta = delta * scale.mean()
+
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            for dz in [-1, 0, 1]:
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue
+                v1 = volume[
+                    :, :, 1 + dz : D - 1 + dz, 1 + dy : H - 1 + dy, 1 + dx : W - 1 + dx
+                ]
+                r1 = reconstructed[
+                    :, :, 1 + dz : D - 1 + dz, 1 + dy : H - 1 + dy, 1 + dx : W - 1 + dx
+                ]
+                d2 = dx * dx + dy * dy + dz * dz
+                dv2 = (v1 - v0) ** 2
+                if is_sms:
+                    dv2 = torch.clamp(dv2, min=0, max=1e6)
+                    denominator = d2 * torch.sqrt(1 + 1 / (d2 * scaled_delta * scaled_delta) * dv2 + 1e-10)
+                    b = 1 / (denominator + 1e-10)
+                    b = torch.where(torch.isfinite(b), b, torch.zeros_like(b))
+                else:
+                    b = 1 / (d2 * torch.sqrt(1 + 1 / (d2 * scaled_delta * scaled_delta) * dv2))
+                diff = b * (r1 - r0)
+                if is_sms:
+                    diff = torch.where(torch.isfinite(diff), diff, torch.zeros_like(diff))
+                g[:, :, 1 : D - 1, 1 : H - 1, 1 : W - 1] += diff
+    if cmap_mask is not None:
+        g *= cmap_mask
+
+    if is_sms:
+        g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+
+    reconstructed.add_(g, alpha=alpha * beta)
+
+    if is_sms:
+        reconstructed = torch.where(torch.isfinite(reconstructed), reconstructed, volume)
+
+    reconstructed = F.relu(reconstructed, True)
+    return cast(Volume, Volume.like(v, reconstructed[0, 0], deep=False))

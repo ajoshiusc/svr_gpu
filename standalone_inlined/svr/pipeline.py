@@ -7,6 +7,7 @@ from .outlier import EM, global_ncc_exclusion, local_ssim_exclusion
 from .reconstruction import (
     psf_reconstruction,
     srr_update,
+    srr_update_quantile,
     simulate_slices,
     slices_scale,
     simulated_error,
@@ -126,6 +127,202 @@ def _save_stack_png(data: torch.Tensor, path: str, title: str = "", cmap: str = 
         logging.info("Saved PNG screenshot %s", path)
     except Exception:
         logging.debug("Failed to save PNG screenshot %s", path, exc_info=True)
+
+
+def _save_summary_png(
+    volume_data: torch.Tensor,
+    mask: torch.Tensor,
+    path: str,
+    uncertainty_data: Optional[torch.Tensor] = None,
+    coverage_count: Optional[torch.Tensor] = None,
+    coverage_weighted: Optional[torch.Tensor] = None,
+) -> None:
+    """Save 3-plane orthogonal views as a multi-row PNG.
+
+    Rows (in order, each optional except volume):
+      - Row 0: SVR reconstructed volume (always shown)
+      - Row 1: Uncertainty map (only when uncertainty_data is provided)
+      - Row 2: Coverage stack-count map (only when coverage_count is provided)
+    """
+    if not _HAS_MATPLOTLIB:
+        return
+    try:
+        def _sq3d(a):
+            while a.ndim > 3:
+                a = a.squeeze(0) if a.shape[0] == 1 else a.squeeze(-1)
+            return a
+
+        vol = _sq3d(_to_numpy(volume_data))
+        msk = _sq3d(_to_numpy(mask.float())) if mask is not None else np.ones_like(vol)
+
+        has_unc = uncertainty_data is not None
+        has_cov = coverage_count is not None
+
+        if has_unc:
+            unc = _sq3d(_to_numpy(uncertainty_data))
+        if has_cov:
+            cnt = _sq3d(_to_numpy(coverage_count))
+
+        if vol.ndim != 3:
+            return
+
+        D, H, W = vol.shape
+        mid_d, mid_h, mid_w = D // 2, H // 2, W // 2
+        plane_titles = [f'Axial (z={mid_d})', f'Coronal (y={mid_h})', f'Sagittal (x={mid_w})']
+
+        # Build list of rows: (label, slices_3, cmap, vmin, vmax, cbar_label)
+        rows = []
+
+        # Row: volume
+        slices_vol = [vol[mid_d], vol[:, mid_h, :], vol[:, :, mid_w]]
+        rows.append(('SVR Volume', slices_vol, 'gray', None, None, None))
+
+        # Row: uncertainty
+        if has_unc:
+            unc_masked = unc * msk
+            vmax_unc = float(np.percentile(unc_masked[unc_masked > 0], 99)) if (unc_masked > 0).any() else 1.0
+            slices_unc = []
+            slices_msk = [msk[mid_d], msk[:, mid_h, :], msk[:, :, mid_w]]
+            for i, s in enumerate([unc[mid_d], unc[:, mid_h, :], unc[:, :, mid_w]]):
+                s = s.copy()
+                s[slices_msk[i] < 0.5] = 0
+                slices_unc.append(s)
+            rows.append(('Uncertainty (Q₀.₉ − Q₀.₁)', slices_unc, 'hot', 0, vmax_unc, 'Uncertainty'))
+
+        # Row: coverage
+        if has_cov:
+            cnt_masked = cnt * msk
+            vmax_cnt = float(cnt_masked.max()) if cnt_masked.max() > 0 else 1
+            slices_cnt = [cnt[mid_d], cnt[:, mid_h, :], cnt[:, :, mid_w]]
+            rows.append(('Stack Count', slices_cnt, 'viridis', 0, vmax_cnt, 'Number of Stacks'))
+
+        nrows = len(rows)
+        fig, axes = plt.subplots(nrows, 3, figsize=(18, 6 * nrows))
+        if nrows == 1:
+            axes = axes[np.newaxis, :]  # ensure 2D
+
+        for ri, (label, slices_data, cmap, vmin, vmax, cbar_label) in enumerate(rows):
+            im = None
+            for col in range(3):
+                im = axes[ri, col].imshow(
+                    slices_data[col], cmap=cmap, origin='lower', aspect='equal',
+                    vmin=vmin, vmax=vmax,
+                )
+                axes[ri, col].set_title(
+                    f'{label} — {plane_titles[col]}' if ri > 0 else plane_titles[col],
+                    fontsize=11,
+                )
+                axes[ri, col].axis('off')
+            axes[ri, 0].set_ylabel(label, fontsize=12, labelpad=10)
+            if cbar_label is not None and im is not None:
+                cbar = fig.colorbar(im, ax=axes[ri, :].tolist(), fraction=0.02, pad=0.02)
+                cbar.set_label(cbar_label, fontsize=11)
+
+        title_parts = ['SVR Summary']
+        if has_unc:
+            title_parts.append('Uncertainty')
+        if has_cov:
+            title_parts.append('Coverage')
+        fig.suptitle(' | '.join(title_parts), fontsize=14, fontweight='bold')
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        logging.info("Saved summary PNG %s", path)
+    except Exception:
+        logging.debug("Failed to save summary PNG %s", path, exc_info=True)
+
+
+# Keep old name as alias for backward compatibility
+def _save_uncertainty_overlay_png(
+    volume_data: torch.Tensor,
+    uncertainty_data: torch.Tensor,
+    mask: torch.Tensor,
+    path: str,
+    coverage_count: Optional[torch.Tensor] = None,
+    coverage_weighted: Optional[torch.Tensor] = None,
+) -> None:
+    """Backward-compatible wrapper around _save_summary_png."""
+    _save_summary_png(
+        volume_data, mask, path,
+        uncertainty_data=uncertainty_data,
+        coverage_count=coverage_count,
+        coverage_weighted=coverage_weighted,
+    )
+
+
+def _save_coverage_png(
+    coverage_count: torch.Tensor,
+    coverage_weighted: torch.Tensor,
+    mask: torch.Tensor,
+    path: str,
+) -> None:
+    """Save 3-plane views: stack count (top) and weighted coverage (bottom)."""
+    if not _HAS_MATPLOTLIB:
+        return
+    try:
+        cnt = _to_numpy(coverage_count)
+        wgt = _to_numpy(coverage_weighted)
+        msk = _to_numpy(mask.float()) if mask is not None else np.ones_like(cnt)
+
+        for a in [cnt, wgt, msk]:
+            while a.ndim > 3:
+                a = a.squeeze(0) if a.shape[0] == 1 else a.squeeze(-1)
+        while cnt.ndim > 3:
+            cnt = cnt.squeeze(0) if cnt.shape[0] == 1 else cnt.squeeze(-1)
+        while wgt.ndim > 3:
+            wgt = wgt.squeeze(0) if wgt.shape[0] == 1 else wgt.squeeze(-1)
+        while msk.ndim > 3:
+            msk = msk.squeeze(0) if msk.shape[0] == 1 else msk.squeeze(-1)
+
+        if cnt.ndim != 3:
+            return
+
+        D, H, W = cnt.shape
+        mid_d, mid_h, mid_w = D // 2, H // 2, W // 2
+
+        cnt_masked = cnt * msk
+        wgt_masked = wgt * msk
+        vmax_cnt = cnt_masked.max() if cnt_masked.max() > 0 else 1
+        vmax_wgt = np.percentile(wgt_masked[wgt_masked > 0], 99) if (wgt_masked > 0).any() else 1.0
+
+        slices_cnt = [cnt[mid_d], cnt[:, mid_h, :], cnt[:, :, mid_w]]
+        slices_wgt = [wgt[mid_d], wgt[:, mid_h, :], wgt[:, :, mid_w]]
+        titles = [f'Axial (z={mid_d})', f'Coronal (y={mid_h})', f'Sagittal (x={mid_w})']
+
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+
+        for col in range(3):
+            # Top: stack count
+            im1 = axes[0, col].imshow(
+                slices_cnt[col], cmap='viridis', origin='lower', aspect='equal',
+                vmin=0, vmax=vmax_cnt,
+            )
+            axes[0, col].set_title(titles[col], fontsize=11)
+            axes[0, col].axis('off')
+
+            # Bottom: weighted coverage
+            im2 = axes[1, col].imshow(
+                slices_wgt[col], cmap='inferno', origin='lower', aspect='equal',
+                vmin=0, vmax=vmax_wgt,
+            )
+            axes[1, col].set_title(titles[col], fontsize=11)
+            axes[1, col].axis('off')
+
+        axes[0, 0].set_ylabel('Stack Count', fontsize=12, labelpad=10)
+        axes[1, 0].set_ylabel('Weighted Coverage', fontsize=12, labelpad=10)
+
+        cbar1 = fig.colorbar(im1, ax=axes[0, :].tolist(), fraction=0.02, pad=0.02)
+        cbar1.set_label('Number of Stacks', fontsize=11)
+        cbar2 = fig.colorbar(im2, ax=axes[1, :].tolist(), fraction=0.02, pad=0.02)
+        cbar2.set_label('Confidence-Weighted Coverage', fontsize=11)
+
+        fig.suptitle('Voxel-wise Coverage Map', fontsize=14, fontweight='bold')
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        logging.info("Saved coverage PNG %s", path)
+    except Exception:
+        logging.debug("Failed to save coverage PNG %s", path, exc_info=True)
 
 
 def _ensure_dir(path: str) -> str:
@@ -266,6 +463,9 @@ def slice_to_volume_reconstruction(
     psf: str = "gaussian",
     device: DeviceType = torch.device("cpu"),
     normalize_stacks: bool = True,
+    estimate_uncertainty: bool = False,
+    n_iter_quantile: int = 20,
+    quantiles: Optional[List[float]] = None,
     **unused
 ) -> Tuple[Volume, List[Slice], List[Slice]]:
     # check data
@@ -575,6 +775,191 @@ def slice_to_volume_reconstruction(
     _save_volume_png(volume.image, os.path.join(png_dir, 'final_volume.png'), title='Final Reconstructed Volume')
     _save_volume_png(volume.mask.float(), os.path.join(png_dir, 'final_mask.png'), title='Final Volume Mask')
 
+    # ========================================================================
+    # Coverage map: how many stacks contribute to each voxel
+    # ========================================================================
+    logging.info("Computing voxel-wise coverage map...")
+    try:
+        from ..slice_acquisition import slice_acquisition_adjoint
+        from ..transform import mat_update_resolution
+
+        transforms_all = stack.transformation
+        volume_transform = volume.transformation
+        rel_transform = volume_transform.inv().compose(transforms_all)
+        transform_mat = mat_update_resolution(rel_transform.matrix(), 1, float(volume.resolution_x))
+
+        res_s = float(stack.resolution_x)
+        res_r = float(volume.resolution_x)
+
+        # --- Stack-count coverage: number of distinct stacks per voxel ---
+        n_slices_total = stack.slices.shape[0]
+        n_stacks = len(slice_counts_per_stack)
+        stack_count_volume = torch.zeros_like(volume.image)  # 3D
+        coverage_threshold = 0.01
+
+        offset = 0
+        for si, sc in enumerate(slice_counts_per_stack):
+            # Build ones tensor for this stack's slices only
+            indicator = torch.zeros_like(stack.slices)  # (N_total, 1, H, W)
+            indicator[offset:offset + sc] = 1.0
+            # Mask: indicator is zero outside [offset:offset+sc], so multiplying
+            # by the full mask effectively masks only this stack's slices.
+            # stack.mask shape matches stack.slices: (N_total, 1, H, W)
+            indicator = indicator * stack.mask.float()
+
+            contrib = slice_acquisition_adjoint(
+                transform_mat,
+                psf_tensor,
+                indicator,
+                stack.mask if not with_background else None,
+                volume.mask[None, None] if not with_background else None,
+                volume.shape,
+                res_s / res_r,
+                False,
+                False,
+            )
+            # Binarize: does this stack contribute here?
+            stack_count_volume += (contrib[0, 0] > coverage_threshold).float()
+            offset += sc
+
+        # --- Weighted coverage: sum of confidence across all slices ---
+        # Use the final p (confidence map) from the last SRR iteration
+        if p is not None:
+            p_for_cov = p if not isinstance(p, Stack) else p.slices
+        else:
+            p_for_cov = torch.ones_like(stack.slices)
+
+        weighted_coverage = slice_acquisition_adjoint(
+            transform_mat,
+            psf_tensor,
+            p_for_cov,
+            stack.mask if not with_background else None,
+            volume.mask[None, None] if not with_background else None,
+            volume.shape,
+            res_s / res_r,
+            False,
+            False,
+        )[0, 0]  # squeeze batch+channel
+
+        coverage_volume = Volume.like(volume, stack_count_volume, deep=False)
+        weighted_coverage_volume = Volume.like(volume, weighted_coverage, deep=False)
+
+        # Stats
+        if volume.mask.any():
+            cnt_vals = stack_count_volume[volume.mask]
+            wgt_vals = weighted_coverage[volume.mask]
+            logging.info(
+                "Coverage stats (masked): stack-count mean=%.1f, min=%d, max=%d; "
+                "weighted-coverage mean=%.1f, max=%.1f",
+                cnt_vals.mean().item(), int(cnt_vals.min().item()), int(cnt_vals.max().item()),
+                wgt_vals.mean().item(), wgt_vals.max().item(),
+            )
+
+        _save_nifti(stack_count_volume, os.path.join(intermediates_dir, 'coverage_stack_count.nii.gz'))
+        _save_nifti(weighted_coverage, os.path.join(intermediates_dir, 'coverage_weighted.nii.gz'))
+    except Exception:
+        logging.warning("Failed to compute coverage map", exc_info=True)
+        coverage_volume = None
+        weighted_coverage_volume = None
+
+    # ========================================================================
+    # Quantile regression for uncertainty estimation
+    # ========================================================================
+    uncertainty_volume = None
+    if estimate_uncertainty:
+        if quantiles is None:
+            quantiles = [0.1, 0.5, 0.9]
+        logging.info(
+            "Estimating uncertainty via quantile regression: quantiles=%s, n_iter=%d",
+            quantiles, n_iter_quantile,
+        )
+        # Use the last outer-iteration's beta/alpha for the quantile passes
+        last_outer = n_iter - 1
+        beta_q = max(0.01, 0.08 / (2 ** last_outer))
+        alpha_q = min(1, 0.05 / beta_q)
+
+        quantile_volumes = {}
+        for tau in quantiles:
+            logging.info("Quantile τ=%.2f: starting %d SRR iterations", tau, n_iter_quantile)
+            # Start from the converged volume
+            vol_q = Volume.like(volume, volume.image.clone(), deep=False)
+            for qj in range(n_iter_quantile):
+                # simulate slices from current quantile volume
+                slices_sim_q, slices_weight_q = cast(
+                    Tuple[Stack, Stack],
+                    simulate_slices(
+                        stack, vol_q, return_weight=True,
+                        use_mask=not with_background, psf=psf_tensor,
+                    ),
+                )
+                # scale
+                scale_q = slices_scale(stack, slices_sim_q, slices_weight_q, p_voxel, True)
+                # error
+                err_q = simulated_error(stack, slices_sim_q, scale_q)
+                # quantile SRR update
+                vol_q = srr_update_quantile(
+                    err_q, vol_q, p, alpha_q, beta_q,
+                    delta * intensity_scale_ref, scale_q,
+                    tau=tau,
+                    use_mask=not with_background,
+                    psf=psf_tensor,
+                )
+                if qj % 5 == 0 or qj == n_iter_quantile - 1:
+                    logging.info("  τ=%.2f iter %d/%d done", tau, qj + 1, n_iter_quantile)
+            quantile_volumes[tau] = vol_q
+            _save_nifti(
+                vol_q.image,
+                os.path.join(intermediates_dir, f'quantile_tau{tau:.2f}_volume.nii.gz'),
+            )
+            _save_volume_png(
+                vol_q.image,
+                os.path.join(png_dir, f'quantile_tau{tau:.2f}_volume.png'),
+                title=f'Quantile τ={tau:.2f}',
+            )
+
+        # Use median quantile (0.5) as the main output
+        tau_mid = quantiles[len(quantiles) // 2]
+        volume = quantile_volumes[tau_mid]
+        logging.info("Using τ=%.2f quantile as the SVR output", tau_mid)
+
+        # Uncertainty = upper quantile - lower quantile
+        tau_low, tau_high = quantiles[0], quantiles[-1]
+        uncertainty_image = quantile_volumes[tau_high].image - quantile_volumes[tau_low].image
+        # Clamp to non-negative (upper should be >= lower)
+        uncertainty_image = torch.clamp(uncertainty_image, min=0)
+        uncertainty_volume = Volume.like(volume, uncertainty_image, deep=False)
+
+        # Stats for diagnostics
+        if volume.mask.any():
+            mid_vals = quantile_volumes[tau_mid].image[volume.mask]
+            lo_vals = quantile_volumes[tau_low].image[volume.mask]
+            hi_vals = quantile_volumes[tau_high].image[volume.mask]
+            unc_vals = uncertainty_image[volume.mask]
+            logging.info(
+                "Quantile stats (masked): Q%.1f mean=%.1f, Q%.1f mean=%.1f, "
+                "Q%.1f mean=%.1f, uncertainty mean=%.1f, max=%.1f",
+                tau_low, lo_vals.mean().item(),
+                tau_mid, mid_vals.mean().item(),
+                tau_high, hi_vals.mean().item(),
+                unc_vals.mean().item(), unc_vals.max().item(),
+            )
+
+        _save_nifti(
+            uncertainty_image,
+            os.path.join(intermediates_dir, 'uncertainty_volume.nii.gz'),
+        )
+
+        logging.info("Uncertainty estimation complete")
+
+    # Save combined summary PNG (volume + optional uncertainty + optional coverage)
+    _save_summary_png(
+        volume.image, volume.mask,
+        os.path.join(png_dir, 'summary.png'),
+        uncertainty_data=uncertainty_volume.image if uncertainty_volume is not None else None,
+        coverage_count=coverage_volume.image if coverage_volume is not None else None,
+        coverage_weighted=weighted_coverage_volume.image if weighted_coverage_volume is not None else None,
+    )
+
     # prepare outputs
     slices_sim = cast(
         Stack,
@@ -584,4 +969,4 @@ def slice_to_volume_reconstruction(
     )
     simulated_slices = stack[:]
     output_slices = slices_sim[:]
-    return volume, output_slices, simulated_slices
+    return volume, output_slices, simulated_slices, uncertainty_volume, coverage_volume, weighted_coverage_volume
