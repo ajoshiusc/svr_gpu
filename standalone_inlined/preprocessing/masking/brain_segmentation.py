@@ -12,8 +12,9 @@ import torch.nn.functional as F
 from math import ceil
 import numpy as np
 import logging
-from skimage.morphology import dilation, disk
+from scipy.ndimage import binary_fill_holes
 from skimage.measure import label
+from skimage.morphology import binary_closing, dilation, disk
 from ...image import Stack
 from ... import CHECKPOINT_DIR, MONAIFBS_URL
 
@@ -129,6 +130,42 @@ def batch_infer(inputs: torch.Tensor, model, batch_size: int) -> torch.Tensor:
     return outputs
 
 
+def _largest_connected_component(mask: np.ndarray) -> np.ndarray:
+    labels = label(mask)
+    if labels.max() == 0:
+        return mask.astype(bool, copy=False)
+    counts = np.bincount(labels.ravel())
+    counts[0] = 0
+    return labels == counts.argmax()
+
+
+def _cleanup_slice_mask(
+    mask: np.ndarray,
+    res_x: float,
+    res_y: float,
+    dilation_radius_mm: float,
+) -> np.ndarray:
+    if not mask.any():
+        return mask.astype(bool, copy=False)
+
+    mask = _largest_connected_component(mask)
+    mask = binary_fill_holes(mask)
+
+    # Smooth jagged 2D mask edges from slice-wise segmentation without
+    # noticeably expanding the brain boundary.
+    mean_res = max((res_x + res_y) / 2.0, 1e-6)
+    closing_radius_px = max(1, ceil(0.8 / mean_res))
+    mask = binary_closing(mask, footprint=disk(closing_radius_px))
+
+    if dilation_radius_mm:
+        dilation_radius_px = ceil(2 * dilation_radius_mm / (res_x + res_y))
+        if dilation_radius_px > 0:
+            mask = dilation(mask, footprint=disk(dilation_radius_px))
+
+    mask = binary_fill_holes(mask)
+    return _largest_connected_component(mask)
+
+
 def _segment(
     img: torch.Tensor,
     res_x: float,
@@ -190,12 +227,7 @@ def _segment(
     for i in range(seg_all_np.shape[0]):
         seg_np = seg_all_np[i, 0]
         if seg_np.sum() > 0:
-            if radius:
-                seg_np = dilation(
-                    seg_np, footprint=disk(ceil(2 * radius / (res_x + res_y)))
-                )
-            seg_np = label(seg_np)
-            seg_all_np[i, 0] = seg_np == np.argmax(np.bincount(seg_np.flat)[1:]) + 1
+            seg_all_np[i, 0] = _cleanup_slice_mask(seg_np, res_x, res_y, radius)
     seg_all = torch.tensor(seg_all_np, dtype=torch.bool, device=img.device)
     nnz = seg_all.count_nonzero((1, 2, 3))
     seg_all[nnz < threshold_small * nnz.max()] = 0
