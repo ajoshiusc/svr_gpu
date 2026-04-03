@@ -299,13 +299,7 @@ def global_ncc_exclusion(stack: Stack, volume: Volume, threshold) -> torch.Tenso
     SVRTK does NOT cap the percentage of excluded slices - it trusts the threshold.
     Only safety check: if ALL slices would be excluded, reset to include all.
     """
-    ncc = -ncc_loss(
-        cast(Stack, simulate_slices(stack, volume, True, True)[0]).slices,
-        stack.slices,
-        stack.mask,
-        win=None,
-        reduction="none",
-    )
+    ncc = slice_ncc_scores(stack, volume)
     excluded = ncc < threshold
     num_excluded = torch.count_nonzero(excluded).item()
     total_slices = excluded.shape[0]
@@ -325,6 +319,17 @@ def global_ncc_exclusion(stack: Stack, volume: Volume, threshold) -> torch.Tenso
         ncc[~excluded].mean().item() if num_excluded < total_slices else ncc.mean().item(),
     )
     return excluded
+
+
+def slice_ncc_scores(stack: Stack, volume: Volume) -> torch.Tensor:
+    """Return per-slice NCC scores for the current stack/volume alignment."""
+    return -ncc_loss(
+        cast(Stack, simulate_slices(stack, volume, True, True)[0]).slices,
+        stack.slices,
+        stack.mask,
+        win=None,
+        reduction="none",
+    )
 
 
 def local_ssim_exclusion(

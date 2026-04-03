@@ -3,7 +3,7 @@ from typing import List, Optional, Tuple, cast
 import torch
 import numpy as np
 from .registration import SliceToVolumeRegistration
-from .outlier import EM, global_ncc_exclusion, local_ssim_exclusion
+from .outlier import EM, global_ncc_exclusion, local_ssim_exclusion, slice_ncc_scores
 from .reconstruction import (
     psf_reconstruction,
     srr_update,
@@ -330,6 +330,38 @@ def _ensure_dir(path: str) -> str:
     return path
 
 
+def _slice_ncc_summary(
+    stack: Stack,
+    volume: Volume,
+    threshold: float,
+    mask_override: Optional[torch.Tensor] = None,
+) -> Tuple[float, float, float, int, int]:
+    """Summarize per-slice NCC scores, optionally using a temporary mask."""
+    original_mask = stack.mask
+    if mask_override is not None:
+        stack.mask = mask_override
+    try:
+        ncc_scores = slice_ncc_scores(stack, volume)
+    finally:
+        if mask_override is not None:
+            stack.mask = original_mask
+
+    total_slices = int(ncc_scores.numel())
+    if total_slices == 0:
+        return 0.0, 0.0, 0.0, 0, 0
+
+    excluded = ncc_scores < threshold
+    num_excluded = int(torch.count_nonzero(excluded).item())
+    mean_ncc = float(ncc_scores.mean().item())
+    kept_mean_ncc = (
+        float(ncc_scores[~excluded].mean().item())
+        if num_excluded < total_slices
+        else mean_ncc
+    )
+    excluded_ratio = float(num_excluded / total_slices)
+    return mean_ncc, kept_mean_ncc, excluded_ratio, num_excluded, total_slices
+
+
 def _resolve_temp_root() -> str:
     svr_tmp = os.environ.get('SVR_TEMP_DIR')
     if svr_tmp:
@@ -598,6 +630,13 @@ def slice_to_volume_reconstruction(
 
         # slice-to-volume registration
         if i > 0 and not no_registration:  # skip slice-to-volume registration for the first iteration
+            pre_mean_ncc, pre_kept_mean_ncc, pre_excluded_ratio, pre_num_excluded, total_slices = _slice_ncc_summary(
+                stack,
+                volume,
+                global_ncc_threshold,
+                mask_override=slices_mask_backup.clone(),
+            )
+            previous_transformation = stack.transformation.clone()
             svr = SliceToVolumeRegistration(
                 num_levels=3,
                 num_steps=5,
@@ -606,13 +645,70 @@ def slice_to_volume_reconstruction(
             )
             # Pass the actual PSF to the registration for accurate slice simulation
             svr.psf = psf_tensor
+            registration_use_mask = (
+                not with_background
+                and bool(stack.mask.any().item())
+                and bool(volume.mask.any().item())
+            )
+            logging.info(
+                "Slice-to-volume registration at outer %d using masks: %s",
+                i,
+                registration_use_mask,
+            )
             slices_transform, _ = svr(
                 stack,
                 volume,
-                use_mask=False,
+                use_mask=registration_use_mask,
             )
             stack.transformation = slices_transform
-            # Save stack transformation after registration
+            post_mean_ncc, post_kept_mean_ncc, post_excluded_ratio, post_num_excluded, _ = _slice_ncc_summary(
+                stack,
+                volume,
+                global_ncc_threshold,
+                mask_override=slices_mask_backup.clone(),
+            )
+
+            mean_drop = pre_mean_ncc - post_mean_ncc
+            kept_mean_drop = pre_kept_mean_ncc - post_kept_mean_ncc
+            exclusion_ratio_limit = min(pre_excluded_ratio + 0.20, 0.80)
+
+            revert_reasons = []
+            if post_excluded_ratio > exclusion_ratio_limit:
+                revert_reasons.append(
+                    "excluded slices would jump from "
+                    f"{pre_num_excluded}/{total_slices} ({100.0 * pre_excluded_ratio:.1f}%) "
+                    f"to {post_num_excluded}/{total_slices} ({100.0 * post_excluded_ratio:.1f}%)"
+                )
+            if mean_drop > 0.02 and kept_mean_drop > 0.01:
+                revert_reasons.append(
+                    "mean NCC would drop from "
+                    f"{pre_mean_ncc:.4f} to {post_mean_ncc:.4f} "
+                    f"(kept-slice mean {pre_kept_mean_ncc:.4f} -> {post_kept_mean_ncc:.4f})"
+                )
+
+            if revert_reasons:
+                stack.transformation = previous_transformation
+                logging.warning(
+                    "Reverting slice-to-volume registration at outer %d: %s",
+                    i,
+                    "; ".join(revert_reasons),
+                )
+            else:
+                logging.info(
+                    "Accepted slice-to-volume registration at outer %d: "
+                    "mean NCC %.4f -> %.4f, kept-slice mean NCC %.4f -> %.4f, "
+                    "excluded %d/%d -> %d/%d",
+                    i,
+                    pre_mean_ncc,
+                    post_mean_ncc,
+                    pre_kept_mean_ncc,
+                    post_kept_mean_ncc,
+                    pre_num_excluded,
+                    total_slices,
+                    post_num_excluded,
+                    total_slices,
+                )
+            # Save the transformation that will actually be used
             _save_numpy(stack.transformation.matrix(), os.path.join(intermediates_dir, f'outer{i:02d}_01_transforms_after_registration.npy'))
 
         # global structual exclusion
@@ -624,19 +720,19 @@ def slice_to_volume_reconstruction(
             _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, f'outer{i:02d}_02_mask_after_ncc_exclusion.nii.gz'))
             _save_stack_png(stack.mask.float(), os.path.join(png_dir, f'outer{i:02d}_02_mask_after_ncc_exclusion.png'), title=f'Mask After Global NCC Exclusion (Outer {i})')
 
-        # PSF reconstruction & volume mask
-        # Only rebuild volume from scratch in the first iteration (i==0)
-        # In subsequent iterations, keep the refined volume from the previous iteration
-        if i == 0:
-            volume = psf_reconstruction(
-                stack,
-                volume,
-                update_mask=is_refine_mask,
-                use_mask=not with_background,
-                psf=psf_tensor,
-            )
-            _save_nifti(volume.image, os.path.join(intermediates_dir, f'outer{i:02d}_03_volume_after_psf_init.nii.gz'))
-            _save_volume_png(volume.image, os.path.join(png_dir, f'outer{i:02d}_03_volume_after_psf_init.png'), title=f'Volume After PSF Init (Outer {i})')
+        # Rebuild the Gaussian/PSF initialization every outer iteration.
+        # SVRTK restarts each registration-reconstruction round from the
+        # current transforms and exclusions rather than carrying forward a
+        # stale pre-registered volume estimate.
+        volume = psf_reconstruction(
+            stack,
+            volume,
+            update_mask=is_refine_mask and i == 0,
+            use_mask=not with_background,
+            psf=psf_tensor,
+        )
+        _save_nifti(volume.image, os.path.join(intermediates_dir, f'outer{i:02d}_03_volume_after_psf_init.nii.gz'))
+        _save_volume_png(volume.image, os.path.join(png_dir, f'outer{i:02d}_03_volume_after_psf_init.png'), title=f'Volume After PSF Init (Outer {i})')
 
         # init EM
         em = EM(max_intensity, min_intensity)

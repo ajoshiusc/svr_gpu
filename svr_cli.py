@@ -851,8 +851,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              'sub-stacks so SVR can estimate separate motion '
                              'for each package. '
                              '1 = no splitting (default), 2 = even/odd interleaving.')
-    parser.add_argument('--bias-field-correction', action='store_true',
-                        help='Apply N4 bias field correction')
+    parser.add_argument(
+        '--bias-field-correction',
+        action='store_true',
+        dest='bias_field_correction',
+        default=True,
+        help='Apply N4 bias field correction (default).')
+    parser.add_argument(
+        '--no-bias-field-correction',
+        action='store_false',
+        dest='bias_field_correction',
+        help='Disable N4 bias field correction.')
     parser.add_argument('--n-proc-n4', type=int, default=1,
                         help='Number of processes for N4 bias field correction (default: 1)')
     parser.add_argument('--shrink-factor-n4', type=int, default=4,
@@ -931,14 +940,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-registration",
         action="store_true",
-        default=True,
-        help="Disable slice-to-volume registration after the first iteration (default: True).",
+        default=False,
+        help="Disable slice-to-volume registration after the first iteration (default: False).",
     )
     parser.add_argument(
         "--enable-registration",
         action="store_false",
         dest="no_registration",
-        help="Enable slice-to-volume registration after the first iteration.",
+        help="Enable slice-to-volume registration after the first iteration (default).",
     )
     parser.add_argument(
         "--no-global-exclusion",
