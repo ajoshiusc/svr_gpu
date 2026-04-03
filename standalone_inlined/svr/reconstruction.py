@@ -18,6 +18,35 @@ def dot(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.dot(x.flatten(), y.flatten())
 
 
+def _coverage_damping(cmap: torch.Tensor) -> torch.Tensor:
+    """Compute a conservative damping factor from voxel support/coverage."""
+    cmap = torch.clamp(cmap, min=0.0)
+    damping = torch.sqrt(torch.clamp((cmap + 0.5) / 2.0, min=0.0, max=1.0))
+    return torch.where(torch.isfinite(damping), damping, torch.zeros_like(damping))
+
+
+def _suppress_low_coverage_bright_outliers(
+    reconstructed: torch.Tensor,
+    cmap: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Clamp only extreme bright spikes in weak-support voxels."""
+    if cmap is None:
+        return reconstructed
+
+    low_support = cmap < 1.1
+    if not torch.any(low_support):
+        return reconstructed
+
+    local_mean = F.avg_pool3d(reconstructed, kernel_size=5, stride=1, padding=2)
+    local_sq_mean = F.avg_pool3d(reconstructed * reconstructed, kernel_size=5, stride=1, padding=2)
+    local_var = torch.clamp(local_sq_mean - local_mean * local_mean, min=0.0)
+    local_std = torch.sqrt(local_var + 1e-6)
+    bright_limit = local_mean + 5.5 * local_std
+
+    clamped = torch.minimum(reconstructed, bright_limit)
+    return torch.where(low_support, clamped, reconstructed)
+
+
 def cg(
     A: Callable, b: torch.Tensor, x0: torch.Tensor, n_iter: int, tol: float = 0.0
 ) -> torch.Tensor:
@@ -315,6 +344,9 @@ def srr_update(
         else:
             cmap_mask = cmap > 0
             g[cmap_mask] /= cmap[cmap_mask]
+        g = g * _coverage_damping(cmap)
+    else:
+        cmap = None
 
     if is_sms:
         g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
@@ -364,6 +396,7 @@ def srr_update(
     if is_sms:
         reconstructed = torch.where(torch.isfinite(reconstructed), reconstructed, volume)
 
+    reconstructed = _suppress_low_coverage_bright_outliers(reconstructed, cmap)
     reconstructed = F.relu(reconstructed, True)
     return cast(Volume, Volume.like(v, reconstructed[0, 0], deep=False))
 
@@ -566,8 +599,10 @@ def srr_update_quantile(
         else:
             cmap_mask = cmap > 0
             g[cmap_mask] /= cmap[cmap_mask]
+        g = g * _coverage_damping(cmap)
     else:
         cmap_mask = None
+        cmap = None
 
     if is_sms:
         g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
@@ -616,5 +651,6 @@ def srr_update_quantile(
     if is_sms:
         reconstructed = torch.where(torch.isfinite(reconstructed), reconstructed, volume)
 
+    reconstructed = _suppress_low_coverage_bright_outliers(reconstructed, cmap)
     reconstructed = F.relu(reconstructed, True)
     return cast(Volume, Volume.like(v, reconstructed[0, 0], deep=False))
