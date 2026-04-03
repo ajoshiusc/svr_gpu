@@ -57,9 +57,18 @@ def _segment_stack(args: Namespace, stacks: List[Stack]) -> List[Stack]:
             os.makedirs(masks_dir, exist_ok=True)
             for i, s in enumerate(stacks_out):
                 try:
+                    stack_vol = s.get_volume()
                     mask_vol = s.get_mask_volume()
-                    out_path = os.path.join(masks_dir, f"stack_{i}_mask.nii.gz")
-                    mask_vol.save(out_path)
+                    mask_path = os.path.join(masks_dir, f"stack_{i}_mask.nii.gz")
+                    masked_stack_path = os.path.join(
+                        masks_dir, f"stack_{i}_masked.nii.gz"
+                    )
+                    mask_vol.save(mask_path)
+                    stack_vol.image = stack_vol.image * mask_vol.image.to(
+                        stack_vol.image.device
+                    )
+                    stack_vol.mask = mask_vol.mask.clone()
+                    stack_vol.save(masked_stack_path)
                 except Exception:
                     logging.debug("Could not save mask for stack %d", i)
             logging.info("Saved segmentation masks to %s", masks_dir)

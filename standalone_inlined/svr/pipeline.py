@@ -520,10 +520,58 @@ def slice_to_volume_reconstruction(
     transforms_dir = _ensure_dir(os.path.join(svr_tmp, 'svr'))
     png_dir = _ensure_dir(os.path.join(intermediates_dir, 'png'))
 
+    masked_input_stack = stack.slices * stack.mask.float()
     _save_nifti(stack.slices, os.path.join(intermediates_dir, '00_input_stack.nii.gz'))
+    _save_nifti(masked_input_stack, os.path.join(intermediates_dir, '00_input_stack_masked.nii.gz'))
     _save_nifti(stack.mask.float(), os.path.join(intermediates_dir, '00_input_mask.nii.gz'))
     _save_stack_png(stack.slices, os.path.join(png_dir, '00_input_stack.png'), title='Input Stack (preprocessed)')
+    _save_stack_png(masked_input_stack, os.path.join(png_dir, '00_input_stack_masked.png'), title='Input Stack (masked)')
     _save_stack_png(stack.mask.float(), os.path.join(png_dir, '00_input_mask.png'), title='Input Mask')
+
+    # Also persist each original input stack separately so mask issues can be
+    # inspected without manually splitting the concatenated slice stack.
+    grouped_slices: List[List[Slice]] = []
+    grouped_source_indices: List[Optional[int]] = []
+    current_stack_idx = None
+    current_group: List[Slice] = []
+    for s in slices:
+        stack_idx = getattr(s, '_source_stack_idx', None)
+        if current_group and stack_idx != current_stack_idx:
+            grouped_slices.append(current_group)
+            grouped_source_indices.append(current_stack_idx)
+            current_group = []
+        current_stack_idx = stack_idx
+        current_group.append(s)
+    if current_group:
+        grouped_slices.append(current_group)
+        grouped_source_indices.append(current_stack_idx)
+
+    for group_num, group_slices in enumerate(grouped_slices):
+        group_stack = Stack.cat(group_slices)
+        group_masked = group_stack.slices * group_stack.mask.float()
+        source_idx = grouped_source_indices[group_num]
+        label = (
+            f"{int(source_idx):02d}" if isinstance(source_idx, (int, np.integer))
+            else f"{group_num:02d}"
+        )
+        _save_nifti(
+            group_masked,
+            os.path.join(intermediates_dir, f'00_input_stack_{label}_masked.nii.gz'),
+        )
+        _save_nifti(
+            group_stack.mask.float(),
+            os.path.join(intermediates_dir, f'00_input_mask_{label}.nii.gz'),
+        )
+        _save_stack_png(
+            group_masked,
+            os.path.join(png_dir, f'00_input_stack_{label}_masked.png'),
+            title=f'Input Stack {group_num} (masked)',
+        )
+        _save_stack_png(
+            group_stack.mask.float(),
+            os.path.join(png_dir, f'00_input_mask_{label}.png'),
+            title=f'Input Mask {group_num}',
+        )
     
     # Extract SMS metadata from input slices if they came from SMS stacks
     # Each slice may have stack_metadata attached during registration
