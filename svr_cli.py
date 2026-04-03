@@ -915,9 +915,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # SVR reconstruction arguments
     parser.add_argument('--output-resolution', type=float, default=0.8,
                         help='Output resolution in mm (default: 0.8)')
-    parser.add_argument('--n-iter', type=int, default=3,
-                        help='Number of outer iterations (default: 3)')
-    parser.add_argument('--n-iter-rec', type=int, nargs='+', default=[7, 7, 21],
+    parser.add_argument('--n-iter', type=int, default=4,
+                        help='Number of outer iterations (default: 4)')
+    parser.add_argument('--n-iter-rec', type=int, nargs='+', default=[7, 7, 21, 21],
                         help='Number of reconstruction iterations per outer iteration')
     parser.add_argument('--delta', type=float, default=150.0/700.0,
                         help='Delta for robust loss (default: 0.214 = 150/700)')

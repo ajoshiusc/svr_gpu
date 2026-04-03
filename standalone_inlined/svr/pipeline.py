@@ -881,6 +881,10 @@ def slice_to_volume_reconstruction(
             # super-resolution update
             beta = max(0.01, 0.08 / (2**i))
             alpha = min(1, 0.05 / beta)
+            outer_progress = (i + 1) / max(1, n_iter)
+            inner_progress = (j + 1) / max(1, n_iter_rec[i])
+            refinement_progress = ((outer_progress - 1.0 / max(1, n_iter)) + inner_progress / max(1, n_iter)) if n_iter > 0 else inner_progress
+            late_safeguard_strength = max(0.0, min(1.0, (refinement_progress - 0.6) / 0.4))
             volume = srr_update(
                 err,
                 volume,
@@ -891,6 +895,7 @@ def slice_to_volume_reconstruction(
                 scale,
                 use_mask=not with_background,
                 psf=psf_tensor,
+                safeguard_strength=late_safeguard_strength,
             )
             # Save volume after inner iteration
             affine = getattr(volume, 'affine', None)
@@ -1047,6 +1052,7 @@ def slice_to_volume_reconstruction(
                     tau=tau,
                     use_mask=not with_background,
                     psf=psf_tensor,
+                    safeguard_strength=1.0,
                 )
                 if qj % 5 == 0 or qj == n_iter_quantile - 1:
                     logging.info("  τ=%.2f iter %d/%d done", tau, qj + 1, n_iter_quantile)
