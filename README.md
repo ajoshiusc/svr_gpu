@@ -77,12 +77,13 @@ python svr_cli.py \
   --input-stacks stack1.nii.gz stack2.nii.gz \
   --output result.nii.gz \
   --segmentation twai \
-  # Run without segmentation
-  python svr_cli.py \
-    --input-stacks stack1.nii.gz stack2.nii.gz \
-    --output result.nii.gz \
-    --segmentation none
   --no-auto-reorient
+
+# Run without segmentation
+python svr_cli.py \
+  --input-stacks stack1.nii.gz stack2.nii.gz \
+  --output result.nii.gz \
+  --segmentation none
 ```
 
 ### Option 2: DICOM Workflow (Clinical Use)
@@ -116,10 +117,10 @@ python run_svr_gpu.py DICOM_DIR OUTPUT_PARENT [OPTIONS]
 - `--device N`: GPU device ID (0, 1, ...) or -1 for CPU-only
 - `--batch-size-seg N`: Segmentation batch size (default: 16, use 4-8 for memory-constrained systems)
 - `--max-series N`: Limit number of series to process (prioritizes brain+TSE sequences) (default: 4)
-- `--no-augmentation-seg`: Disable segmentation augmentation for faster CPU processing
 - `--keep-temp`: Keep intermediate NIfTI files for inspection
 - `--study-name NAME`: Custom name for output directory
 - `--include-series-keyword KEY`: Only include series whose SeriesDescription contains ALL provided keywords (case-insensitive). Repeatable.
+- `--te N`: Filter series by Echo Time (TE)
 
 **Example:**
 ```bash
@@ -157,7 +158,6 @@ python run_svr_gpu.py \
   --device -1 \
   --batch-size-seg 4 \
   --max-series 7 \
-  --no-augmentation-seg \
   --keep-temp
 ```
 
@@ -244,8 +244,8 @@ Organize DICOM files by study and series:
 
 ```bash
 python organize_dicom_files.py \
-  --input-dir /path/to/dicoms \
-  --output-dir /path/to/organized
+  /path/to/dicoms \
+  /path/to/organized
 ```
 
 ## Project Structure
@@ -296,10 +296,11 @@ svr_gpu/
   ```
 
 **Problem:** Very slow processing
-- **Solution for CPU runs:** Use optimization flags:
+- **Solution for CPU runs:** Use optimization flags (if using run_svr_gpu.py):
   ```bash
-  --device -1 --batch-size-seg 4 --no-augmentation-seg --max-series 5
+  --device -1 --batch-size-seg 4 --max-series 5
   ```
+  Note: When using `svr_cli.py`, you can also use `--no-augmentation-seg` for faster CPU processing.
 
 ### Import Errors
 
