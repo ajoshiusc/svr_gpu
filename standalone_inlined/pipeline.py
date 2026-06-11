@@ -5,6 +5,8 @@ import os
 from argparse import Namespace
 from typing import Any, Dict, List, Tuple, Optional
 
+import torch
+
 from .image import Stack, Slice
 from .transform import RigidTransform
 from .assessment import assess as assess_stacks
@@ -14,6 +16,9 @@ from .preprocessing.bias_field import n4_bias_field_correction
 from .svort.inference import svort_predict
 
 logger = logging.getLogger(__name__)
+
+_ORIENTATION_LABELS = ("sagittal", "coronal", "axial")
+_ORIENTATION_PRIORITY = {0: 0, 2: 1, 1: 2}
 
 
 def _segment_stack(args: Namespace, stacks: List[Stack]) -> List[Stack]:
@@ -88,6 +93,129 @@ def _correct_bias_field(args: Namespace, stacks: List[Stack]) -> List[Stack]:
     return n4_bias_field_correction(stacks, n4_params)
 
 
+def _stack_slice_normal(stack: Stack) -> torch.Tensor:
+    """Return the physical slice-normal direction for a stack."""
+    matrices = stack.transformation.matrix()
+    if matrices.numel() == 0:
+        return torch.tensor((0.0, 0.0, 1.0), dtype=torch.float32)
+    normal = matrices[0, :, 2].detach().cpu().to(torch.float32)
+    norm = torch.linalg.vector_norm(normal).item()
+    if norm <= 1e-6:
+        return torch.tensor((0.0, 0.0, 1.0), dtype=torch.float32)
+    return normal / norm
+
+
+def _orientation_axis(normal: torch.Tensor) -> int:
+    return int(torch.argmax(torch.abs(normal)).item())
+
+
+def _stack_display_name(stack: Stack, fallback_idx: int) -> str:
+    name = getattr(stack, "name", None)
+    if not name:
+        return f"stack_{fallback_idx}"
+    return os.path.basename(str(name))
+
+
+def _registration_order(stacks: List[Stack]) -> Tuple[List[int], List[Tuple[str, str, Tuple[float, float, float]]]]:
+    """Choose a deterministic, geometry-aware stack order for registration."""
+    count = len(stacks)
+    if count <= 1:
+        normal = (0.0, 0.0, 1.0)
+        summary = [(_stack_display_name(stacks[0], 0), "axial", normal)] if stacks else []
+        return list(range(count)), summary
+
+    normals = [_stack_slice_normal(stack) for stack in stacks]
+    axes = [_orientation_axis(normal) for normal in normals]
+    axis_counts = {axis: axes.count(axis) for axis in range(3)}
+
+    best_pair: Optional[Tuple[int, int]] = None
+    best_pair_key: Optional[Tuple[float, int, int, int, int, int]] = None
+    for i in range(count):
+        for j in range(i + 1, count):
+            dot = abs(float(torch.dot(normals[i], normals[j])))
+            coverage = axis_counts[axes[i]]
+            if axes[j] != axes[i]:
+                coverage += axis_counts[axes[j]]
+            pair_key = (
+                round(dot, 6),
+                -coverage,
+                min(_ORIENTATION_PRIORITY[axes[i]], _ORIENTATION_PRIORITY[axes[j]]),
+                max(_ORIENTATION_PRIORITY[axes[i]], _ORIENTATION_PRIORITY[axes[j]]),
+                i,
+                j,
+            )
+            if best_pair_key is None or pair_key < best_pair_key:
+                best_pair_key = pair_key
+                best_pair = (i, j)
+
+    assert best_pair is not None
+    order = sorted(
+        best_pair,
+        key=lambda idx: (
+            axis_counts[axes[idx]],
+            _ORIENTATION_PRIORITY[axes[idx]],
+            idx,
+        ),
+    )
+
+    remaining = [idx for idx in range(count) if idx not in order]
+    while remaining:
+        next_idx = min(
+            remaining,
+            key=lambda idx: (
+                max(abs(float(torch.dot(normals[idx], normals[chosen]))) for chosen in order),
+                axis_counts[axes[idx]],
+                _ORIENTATION_PRIORITY[axes[idx]],
+                idx,
+            ),
+        )
+        order.append(next_idx)
+        remaining.remove(next_idx)
+
+    summary = []
+    for idx in order:
+        normal = tuple(round(float(v), 3) for v in normals[idx].tolist())
+        summary.append(
+            (
+                _stack_display_name(stacks[idx], idx),
+                _ORIENTATION_LABELS[axes[idx]],
+                normal,
+            )
+        )
+    return order, summary
+
+
+def _order_stacks_for_registration(stacks: List[Stack]) -> List[Stack]:
+    """Promote orthogonal stack anchors before SVoRT / stack registration."""
+    order, summary = _registration_order(stacks)
+    if not summary:
+        return stacks
+
+    original_names = [_stack_display_name(stack, i) for i, stack in enumerate(stacks)]
+    ordered_names = [original_names[i] for i in order]
+    if order != list(range(len(stacks))):
+        logger.info(
+            "Geometry-aware registration reorder: %s -> %s",
+            " -> ".join(original_names),
+            " -> ".join(ordered_names),
+        )
+    else:
+        logger.info("Input stack order already suitable for geometry-aware registration anchors")
+
+    for rank, (name, orientation, normal) in enumerate(summary, start=1):
+        logger.info(
+            "  registration stack %d: %s [%s normal=(%.3f, %.3f, %.3f)]",
+            rank,
+            name,
+            orientation,
+            normal[0],
+            normal[1],
+            normal[2],
+        )
+
+    return [stacks[idx] for idx in order]
+
+
 def _register(args: Namespace, stacks: List[Stack]) -> List[Slice]:
     """Register stacks using the configured SVoRT/VVR workflow."""
     registration = args.registration
@@ -115,9 +243,13 @@ def _register(args: Namespace, stacks: List[Stack]) -> List[Slice]:
     else:
         raise ValueError("Unknown registration method '%s'" % registration)
 
+    registration_stacks = stacks
+    if svort or vvr:
+        registration_stacks = _order_stacks_for_registration(stacks)
+
     force_scanner = args.scanner_space
     slices = svort_predict(
-        stacks,
+        registration_stacks,
         args.device,
         args.svort_version,
         svort,

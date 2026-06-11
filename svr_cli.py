@@ -930,7 +930,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     
     # Robust statistics and outlier rejection arguments
     parser.add_argument('--global-ncc-threshold', type=float, default=0.5,
-                        help='Global NCC threshold for slice exclusion (default: 0.5, lower=more permissive)')
+                        help='Global NCC threshold for slice exclusion when --enable-global-exclusion is used (default: 0.5, lower=more permissive)')
     parser.add_argument('--local-ssim-threshold', type=float, default=0.4,
                         help='Local SSIM threshold for pixel exclusion (default: 0.4, lower=more permissive)')
     parser.add_argument('--no-slice-robust-statistics', action='store_true',
@@ -952,7 +952,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-global-exclusion",
         action="store_true",
-        help="Disable global structural exclusion (NCC-based slice rejection, disabled by default)",
+        default=True,
+        help="Disable global structural exclusion (NCC-based slice rejection; default)",
     )
     parser.add_argument(
         "--enable-global-exclusion",
