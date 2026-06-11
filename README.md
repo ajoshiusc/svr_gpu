@@ -116,6 +116,7 @@ python run_svr_gpu.py DICOM_DIR OUTPUT_PARENT [OPTIONS]
 **Key options:**
 - `--device N`: GPU device ID (0, 1, ...) or -1 for CPU-only
 - `--batch-size-seg N`: Segmentation batch size (default: 16, use 4-8 for memory-constrained systems)
+- `--dilation-radius-seg MM`: Segmentation mask padding in mm (default: 2.5; use 1.0 for a tighter brain-only mask)
 - `--max-series N`: Limit number of series to process (prioritizes brain+TSE sequences) (default: 4)
 - `--keep-temp`: Keep intermediate NIfTI files for inspection
 - `--study-name NAME`: Custom name for output directory
@@ -223,6 +224,7 @@ The pipeline automatically prioritizes DICOM series for optimal reconstruction:
 - **GPU mode**: PyTorch + CUDA for fast reconstruction (5-15 minutes per case)
 - **CPU mode**: Use `--device -1` for systems without GPU (30-60 minutes per case)
 - **Memory optimization**: Use `--batch-size-seg 4-8` to reduce memory usage
+- **Mask padding**: Use `--dilation-radius-seg` to include more skull/CSF rim around the segmented brain when edge support looks too tight
 - **Series limiting**: Use `--max-series N` to process only the best N series
 - Supports multi-GPU systems (specify GPU with `--device 0`, `--device 1`, etc.)
 
@@ -353,4 +355,3 @@ If you use this code in your research, please cite the original NeSVoR paper:
   publisher={IEEE}
 }
 ```
-

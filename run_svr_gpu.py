@@ -20,6 +20,7 @@ Directory structure created:
 
 Key features:
 - Memory optimization via --batch-size-seg and --max-series
+- Segmentation mask control via --dilation-radius-seg
 - CPU support with --device -1
 - Original series name preservation
 - Intelligent series prioritization for brain T2-weighted sequences
@@ -41,6 +42,7 @@ def main():
     p.add_argument("--keep-temp", action="store_true", help="Pass --keep-temp to svr_dicom.py to retain temp files")
     p.add_argument("--device", default=None, help="Device id to pass to svr_dicom.py (optional)")
     p.add_argument("--batch-size-seg", type=int, default=None, help="Segmentation batch size to pass to svr_dicom.py")
+    p.add_argument("--dilation-radius-seg", type=float, default=None, help="Segmentation mask dilation radius in mm to pass to svr_dicom.py")
     p.add_argument("--max-series", type=int, default=4, help="Maximum number of series to use (prioritized) (default: 4)")
     p.add_argument(
         "--include-series-keyword",
@@ -264,6 +266,8 @@ def main():
 
     if args.batch_size_seg is not None:
         svr_cmd.extend(['--batch-size-seg', str(args.batch_size_seg)])
+    if args.dilation_radius_seg is not None:
+        svr_cmd.extend(['--dilation-radius-seg', str(args.dilation_radius_seg)])
     if args.keep_temp:
         svr_cmd.append('--keep-temp')
     if args.device is not None:

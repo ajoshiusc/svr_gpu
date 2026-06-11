@@ -173,7 +173,7 @@ def _segment(
     net,
     batch_size: int,
     augmentation: bool,
-    radius: int,
+    radius: float,
     threshold_small: float,
 ) -> torch.Tensor:
     # resample (bilinear)
@@ -239,7 +239,7 @@ def brain_segmentation(
     device,
     batch_size: int,
     augmentation: bool,
-    radius: int,
+    radius: float,
     threshold_small: float,
 ) -> List[Stack]:
     net = build_monaifbs_net(device)

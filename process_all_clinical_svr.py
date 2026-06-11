@@ -100,8 +100,9 @@ def main():
             "--input-stacks"
         ] + nifti_inputs + [
             "--output", str(out_volume),
-            "--segmentation", "twai",
-            "--batch-size-seg", "4"
+            #"--segmentation", "twai",
+            #"--batch-size-seg", "4",
+            #"--dilation-radius-seg", "5.5"
         ]
 
         print("  Input NIfTI stacks (discovery order; svr_cli.py may reorder for registration):")

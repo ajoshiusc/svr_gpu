@@ -353,6 +353,8 @@ def run_svr_cli(nifti_inputs, nifti_output, args, temp_dir=None):
         cmd += ["--bias-field-correction"]
     if hasattr(args, 'batch_size_seg') and args.batch_size_seg is not None:
         cmd += ["--batch-size-seg", str(args.batch_size_seg)]
+    if hasattr(args, 'dilation_radius_seg') and args.dilation_radius_seg is not None:
+        cmd += ["--dilation-radius-seg", str(args.dilation_radius_seg)]
     
     # Add robust reconstruction settings to eliminate holes
     # Disable local SSIM-based exclusion which causes scattered holes
@@ -404,6 +406,8 @@ def main():
     
     parser.add_argument('--batch-size-seg', type=int, default=None,
                         help='Segmentation batch size to pass to SVR CLI')
+    parser.add_argument('--dilation-radius-seg', type=float, default=None,
+                        help='Segmentation mask dilation radius in mm to pass to SVR CLI (default: use SVR CLI default)')
     args = parser.parse_args()
     
     # Create temp directory for NIfTI conversion

@@ -896,8 +896,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help='Batch size for segmentation')
     parser.add_argument('--no-augmentation-seg', action='store_true',
                         help='Disable inference augmentation in segmentation')
-    parser.add_argument('--dilation-radius-seg', type=float, default=1.0,
-                        help='Dilation radius for segmentation mask (mm)')
+    parser.add_argument('--dilation-radius-seg', type=float, default=2.5,
+                        help='Dilation radius for segmentation mask in mm (default: 2.5; use 1.0 for tighter brain-only masks)')
     parser.add_argument('--threshold-small-seg', type=float, default=0.1,
                         help='Threshold for removing small masks')
 
