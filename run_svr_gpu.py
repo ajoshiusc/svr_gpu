@@ -43,6 +43,11 @@ def main():
     p.add_argument("--device", default=None, help="Device id to pass to svr_dicom.py (optional)")
     p.add_argument("--batch-size-seg", type=int, default=None, help="Segmentation batch size to pass to svr_dicom.py")
     p.add_argument("--dilation-radius-seg", type=float, default=None, help="Segmentation mask dilation radius in mm to pass to svr_dicom.py")
+    p.add_argument("--srr-alpha-max", type=float, default=None, help="Maximum SRR data update step to pass to svr_dicom.py")
+    p.add_argument("--srr-beta-min", type=float, default=None, help="Minimum SRR regularization strength to pass to svr_dicom.py")
+    p.add_argument("--srr-data-step", type=float, default=None, help="SRR data/regularization balance target to pass to svr_dicom.py")
+    p.add_argument("--srr-final-cg-iter", type=int, default=None, help="Final regularized CG SRR polish iterations to pass to svr_dicom.py")
+    p.add_argument("--srr-final-cg-mu", type=float, default=None, help="Final CG Tikhonov prior weight to pass to svr_dicom.py")
     p.add_argument("--max-series", type=int, default=4, help="Maximum number of series to use (prioritized) (default: 4)")
     p.add_argument(
         "--include-series-keyword",
@@ -268,6 +273,16 @@ def main():
         svr_cmd.extend(['--batch-size-seg', str(args.batch_size_seg)])
     if args.dilation_radius_seg is not None:
         svr_cmd.extend(['--dilation-radius-seg', str(args.dilation_radius_seg)])
+    if args.srr_alpha_max is not None:
+        svr_cmd.extend(['--srr-alpha-max', str(args.srr_alpha_max)])
+    if args.srr_beta_min is not None:
+        svr_cmd.extend(['--srr-beta-min', str(args.srr_beta_min)])
+    if args.srr_data_step is not None:
+        svr_cmd.extend(['--srr-data-step', str(args.srr_data_step)])
+    if args.srr_final_cg_iter is not None:
+        svr_cmd.extend(['--srr-final-cg-iter', str(args.srr_final_cg_iter)])
+    if args.srr_final_cg_mu is not None:
+        svr_cmd.extend(['--srr-final-cg-mu', str(args.srr_final_cg_mu)])
     if args.keep_temp:
         svr_cmd.append('--keep-temp')
     if args.device is not None:

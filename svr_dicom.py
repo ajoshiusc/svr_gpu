@@ -355,11 +355,21 @@ def run_svr_cli(nifti_inputs, nifti_output, args, temp_dir=None):
         cmd += ["--batch-size-seg", str(args.batch_size_seg)]
     if hasattr(args, 'dilation_radius_seg') and args.dilation_radius_seg is not None:
         cmd += ["--dilation-radius-seg", str(args.dilation_radius_seg)]
+    if hasattr(args, 'srr_alpha_max') and args.srr_alpha_max is not None:
+        cmd += ["--srr-alpha-max", str(args.srr_alpha_max)]
+    if hasattr(args, 'srr_beta_min') and args.srr_beta_min is not None:
+        cmd += ["--srr-beta-min", str(args.srr_beta_min)]
+    if hasattr(args, 'srr_data_step') and args.srr_data_step is not None:
+        cmd += ["--srr-data-step", str(args.srr_data_step)]
+    if hasattr(args, 'srr_final_cg_iter') and args.srr_final_cg_iter is not None:
+        cmd += ["--srr-final-cg-iter", str(args.srr_final_cg_iter)]
+    if hasattr(args, 'srr_final_cg_mu') and args.srr_final_cg_mu is not None:
+        cmd += ["--srr-final-cg-mu", str(args.srr_final_cg_mu)]
     
     # Add robust reconstruction settings to eliminate holes
     # Disable local SSIM-based exclusion which causes scattered holes
     cmd += [
-        "--global-ncc-threshold", "0.3",  # More permissive (default 0.5)
+        "--global-ncc-threshold", "0.3",  # Match SVR CLI default
         "--no-local-exclusion",           # Disable SSIM-based pixel rejection
     ]
     
@@ -408,6 +418,16 @@ def main():
                         help='Segmentation batch size to pass to SVR CLI')
     parser.add_argument('--dilation-radius-seg', type=float, default=None,
                         help='Segmentation mask dilation radius in mm to pass to SVR CLI (default: use SVR CLI default)')
+    parser.add_argument('--srr-alpha-max', type=float, default=None,
+                        help='Maximum SRR data update step to pass to SVR CLI')
+    parser.add_argument('--srr-beta-min', type=float, default=None,
+                        help='Minimum SRR regularization strength to pass to SVR CLI')
+    parser.add_argument('--srr-data-step', type=float, default=None,
+                        help='SRR data/regularization balance target to pass to SVR CLI')
+    parser.add_argument('--srr-final-cg-iter', type=int, default=None,
+                        help='Final regularized CG SRR polish iterations to pass to SVR CLI')
+    parser.add_argument('--srr-final-cg-mu', type=float, default=None,
+                        help='Final CG Tikhonov prior weight to pass to SVR CLI')
     args = parser.parse_args()
     
     # Create temp directory for NIfTI conversion

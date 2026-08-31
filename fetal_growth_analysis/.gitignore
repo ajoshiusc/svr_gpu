@@ -1,0 +1,8 @@
+models/
+third_party/
+demo_outputs/
+meeting_outputs/
+.ipynb_checkpoints/
+.pytest_cache/
+__pycache__/
+*.egg-info/

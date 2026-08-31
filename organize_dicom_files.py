@@ -26,20 +26,16 @@ def organize_dicom_directory(input_dir, output_dir, series_filter=None, verbose=
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Find all DICOM files recursively
+    # Find DICOM candidates recursively. Some PACS exports use extensionless
+    # filenames, so validate candidates with pydicom below rather than relying
+    # on filename extensions.
     dicom_files = []
     for root, dirs, files in os.walk(input_path):
         for file in files:
-            # Accept common DICOM filename patterns:
-            # - .dcm extension
-            # - .ima extension (Siemens)
-            # - starts with IM-
-            lower = file.lower()
-            if lower.endswith('.dcm') or lower.endswith('.ima') or file.startswith('IM-'):
-                dicom_files.append(Path(root) / file)
+            dicom_files.append(Path(root) / file)
     
     if verbose:
-        print(f"Found {len(dicom_files)} DICOM files in {input_dir}")
+        print(f"Found {len(dicom_files)} files to check for DICOM data in {input_dir}")
     
     # Organize files by series
     series_info = {}

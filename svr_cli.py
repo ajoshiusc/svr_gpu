@@ -767,6 +767,11 @@ def run_svr(args: Namespace):
             device=args.device,
             normalize_stacks=not args.no_intensity_normalization,
             estimate_uncertainty=getattr(args, 'estimate_uncertainty', False),
+            srr_alpha_max=args.srr_alpha_max,
+            srr_beta_min=args.srr_beta_min,
+            srr_data_step=args.srr_data_step,
+            srr_final_cg_iter=args.srr_final_cg_iter,
+            srr_final_cg_mu=args.srr_final_cg_mu,
         )
     except TypeError as e:
         logger.warning("SVR EM outlier error detected; retrying without segmentation. Error: %s", e)
@@ -791,6 +796,11 @@ def run_svr(args: Namespace):
             device=args.device,
             normalize_stacks=not args.no_intensity_normalization,
             estimate_uncertainty=getattr(args, 'estimate_uncertainty', False),
+            srr_alpha_max=args.srr_alpha_max,
+            srr_beta_min=args.srr_beta_min,
+            srr_data_step=args.srr_data_step,
+            srr_final_cg_iter=args.srr_final_cg_iter,
+            srr_final_cg_mu=args.srr_final_cg_mu,
         )
     
     # Save outputs
@@ -917,8 +927,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help='Output resolution in mm (default: 0.8)')
     parser.add_argument('--n-iter', type=int, default=4,
                         help='Number of outer iterations (default: 4)')
-    parser.add_argument('--n-iter-rec', type=int, nargs='+', default=[7, 7, 21, 21],
-                        help='Number of reconstruction iterations per outer iteration')
+    parser.add_argument('--n-iter-rec', type=int, nargs='+', default=[7, 7, 10, 10],
+                        help='Number of reconstruction iterations per outer iteration (default: 7 7 10 10)')
     parser.add_argument('--delta', type=float, default=150.0/700.0,
                         help='Delta for robust loss (default: 0.214 = 150/700)')
     parser.add_argument('--output-intensity-mean', type=float, default=700.0,
@@ -927,10 +937,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help='Include background in output volume')
     parser.add_argument('--psf', type=str, default='gaussian', choices=['gaussian', 'box'],
                         help='PSF type (default: gaussian)')
+    parser.add_argument('--srr-alpha-max', type=float, default=0.6,
+                        help='Maximum SRR data update step (default: 0.6; lower is smoother)')
+    parser.add_argument('--srr-beta-min', type=float, default=0.05,
+                        help='Minimum SRR edge-preserving regularization strength (default: 0.05; higher is smoother)')
+    parser.add_argument('--srr-data-step', type=float, default=0.045,
+                        help='SRR data/regularization balance target (default: 0.045; lower is smoother)')
+    parser.add_argument('--srr-final-cg-iter', type=int, default=0,
+                        help='Optional final regularized CG SRR polish iterations (default: 0/off)')
+    parser.add_argument('--srr-final-cg-mu', type=float, default=0.03,
+                        help='Tikhonov prior weight for final CG polish (default: 0.03)')
     
     # Robust statistics and outlier rejection arguments
-    parser.add_argument('--global-ncc-threshold', type=float, default=0.5,
-                        help='Global NCC threshold for slice exclusion when --enable-global-exclusion is used (default: 0.5, lower=more permissive)')
+    parser.add_argument('--global-ncc-threshold', type=float, default=0.3,
+                        help='Global NCC threshold for slice exclusion and registration acceptance (default: 0.3, lower=more permissive)')
     parser.add_argument('--local-ssim-threshold', type=float, default=0.4,
                         help='Local SSIM threshold for pixel exclusion (default: 0.4, lower=more permissive)')
     parser.add_argument('--no-slice-robust-statistics', action='store_true',

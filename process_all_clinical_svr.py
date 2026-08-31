@@ -96,10 +96,14 @@ def main():
         import sys
         # Build command to run svr_cli.py
         cmd = [
-            sys.executable, str(svr_cli_path),
+            ".venv/bin/python", str(svr_cli_path),
             "--input-stacks"
         ] + nifti_inputs + [
             "--output", str(out_volume),
+            "--delta", "150", 
+            "--srr-alpha-max", "3",
+            "--srr-beta-min", "0.01",
+            "--srr-data-step", "3"
             #"--segmentation", "twai",
             #"--batch-size-seg", "4",
             #"--dilation-radius-seg", "5.5"
